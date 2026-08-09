@@ -1,0 +1,196 @@
+"""Persistent memory for the bot: deferred messages, an activity log, backup health.
+
+Design note — why this is a plain SQLite file and not a memory framework:
+
+The binding constraint here is tokens per turn, not retrieval quality. Every query
+this bot needs is exact and keyed ("messages pending for player X", "backups since
+date Y"), so semantic search buys nothing while adding a dependency, a network hop
+and a per-query cost. The daemon owns the store and injects one small fixed block
+per turn, which means context cost stays flat no matter how much history piles up.
+
+Bloat control is the nightly rollup: raw request rows collapse into one summary line
+per day, and anything older than RAW_RETENTION_DAYS is deleted. A month of history
+is a few dozen lines, not a transcript.
+"""
+import sqlite3
+import time
+from pathlib import Path
+
+DB_PATH = Path("/var/lib/mcbot/memory.db")
+RAW_RETENTION_DAYS = 4        # keep individual events this long, then only summaries
+SUMMARY_RETENTION_DAYS = 60   # keep daily rollups this long
+MAX_CONTEXT_EVENTS = 12       # never inject more than this many recent lines
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages (
+    id          INTEGER PRIMARY KEY,
+    for_player  TEXT NOT NULL COLLATE NOCASE,
+    from_player TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    delivered_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_msg_pending ON messages(for_player, delivered_at);
+
+CREATE TABLE IF NOT EXISTS events (
+    id      INTEGER PRIMARY KEY,
+    ts      REAL NOT NULL,
+    kind    TEXT NOT NULL,          -- join | leave | request | note | backup
+    player  TEXT,
+    detail  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+CREATE TABLE IF NOT EXISTS daily (
+    day     TEXT PRIMARY KEY,       -- YYYY-MM-DD
+    summary TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backups (
+    id          INTEGER PRIMARY KEY,
+    ts          REAL NOT NULL,
+    filename    TEXT,
+    size_bytes  INTEGER,
+    ok          INTEGER NOT NULL,
+    detail      TEXT NOT NULL,
+    reported_at REAL
+);
+"""
+
+
+def connect(path: Path = DB_PATH) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.executescript(SCHEMA)
+    return db
+
+
+# ----------------------------------------------------------------- writing
+def add_message(db, for_player: str, from_player: str, body: str) -> int:
+    cur = db.execute(
+        "INSERT INTO messages (for_player, from_player, body, created_at) VALUES (?,?,?,?)",
+        (for_player, from_player, body, time.time()),
+    )
+    db.commit()
+    return cur.lastrowid
+
+
+def mark_delivered(db, ids: list[int]) -> None:
+    if not ids:
+        return
+    db.executemany(
+        "UPDATE messages SET delivered_at = ? WHERE id = ?",
+        [(time.time(), i) for i in ids],
+    )
+    db.commit()
+
+
+def log_event(db, kind: str, detail: str, player: str | None = None) -> None:
+    db.execute(
+        "INSERT INTO events (ts, kind, player, detail) VALUES (?,?,?,?)",
+        (time.time(), kind, player, detail[:400]),
+    )
+    db.commit()
+
+
+def record_backup(db, filename: str | None, size: int | None, ok: bool, detail: str) -> None:
+    db.execute(
+        "INSERT INTO backups (ts, filename, size_bytes, ok, detail) VALUES (?,?,?,?,?)",
+        (time.time(), filename, size, 1 if ok else 0, detail),
+    )
+    db.commit()
+
+
+# ----------------------------------------------------------------- reading
+def pending_messages(db, player: str) -> list[sqlite3.Row]:
+    return db.execute(
+        "SELECT * FROM messages WHERE for_player = ? AND delivered_at IS NULL "
+        "ORDER BY created_at",
+        (player,),
+    ).fetchall()
+
+
+def unreported_backups(db) -> list[sqlite3.Row]:
+    return db.execute(
+        "SELECT * FROM backups WHERE reported_at IS NULL ORDER BY ts"
+    ).fetchall()
+
+
+def mark_backups_reported(db) -> None:
+    db.execute("UPDATE backups SET reported_at = ? WHERE reported_at IS NULL", (time.time(),))
+    db.commit()
+
+
+def backup_verdict(db) -> str | None:
+    """One line covering all unreported backups, not a per-night rundown."""
+    rows = unreported_backups(db)
+    if not rows:
+        return None
+    ok = sum(r["ok"] for r in rows)
+    n = len(rows)
+    if n == 1:
+        r = rows[0]
+        return (f"Last backup succeeded ({r['size_bytes'] // 1024**2} MB)."
+                if r["ok"] else f"Last backup FAILED: {r['detail']}")
+    if ok == n:
+        return f"Backups healthy — {n} successful since you were last on."
+    if ok == 0:
+        return f"Backups are FAILING — all {n} attempts failed. Most recent: {rows[-1]['detail']}"
+    return (f"Backups intermittent — {ok} of {n} succeeded. "
+            f"Most recent: {'ok' if rows[-1]['ok'] else rows[-1]['detail']}")
+
+
+def recent_activity(db, since_hours: float = 72, limit: int = MAX_CONTEXT_EVENTS) -> list[str]:
+    """Compact recent history: rolled-up days first, then individual recent events."""
+    out = [f"{r['day']}: {r['summary']}" for r in db.execute(
+        "SELECT day, summary FROM daily ORDER BY day DESC LIMIT 5").fetchall()]
+    cutoff = time.time() - since_hours * 3600
+    rows = db.execute(
+        "SELECT ts, kind, player, detail FROM events WHERE ts > ? AND kind = 'request' "
+        "ORDER BY ts DESC LIMIT ?", (cutoff, limit)).fetchall()
+    out += [f"{time.strftime('%m-%d %H:%M', time.localtime(r['ts']))} "
+            f"{r['player'] or '?'}: {r['detail']}" for r in rows]
+    return out
+
+
+# ----------------------------------------------------------------- upkeep
+def rollup(db) -> None:
+    """Collapse finished days into one summary line each, then drop the raw rows.
+
+    Cheap and deterministic — no model call. The summary is a count per player plus
+    the first few things they asked for, which is enough to answer "what did X get
+    up to while I was away" without keeping the transcript.
+    """
+    cutoff_day = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+    days = db.execute(
+        "SELECT DISTINCT date(ts,'unixepoch','localtime') AS d FROM events "
+        "WHERE date(ts,'unixepoch','localtime') <= ? AND kind='request'",
+        (cutoff_day,),
+    ).fetchall()
+    for row in days:
+        day = row["d"]
+        if db.execute("SELECT 1 FROM daily WHERE day = ?", (day,)).fetchone():
+            continue
+        events = db.execute(
+            "SELECT player, detail FROM events WHERE kind='request' "
+            "AND date(ts,'unixepoch','localtime') = ?", (day,)).fetchall()
+        by_player: dict[str, list[str]] = {}
+        for e in events:
+            by_player.setdefault(e["player"] or "?", []).append(e["detail"])
+        parts = []
+        for player, items in by_player.items():
+            sample = "; ".join(items[:3])[:180]
+            extra = f" (+{len(items) - 3} more)" if len(items) > 3 else ""
+            parts.append(f"{player} — {len(items)} request(s): {sample}{extra}")
+        db.execute("INSERT INTO daily (day, summary) VALUES (?,?)", (day, " | ".join(parts)[:600]))
+    db.commit()
+
+    db.execute("DELETE FROM events WHERE ts < ?", (time.time() - RAW_RETENTION_DAYS * 86400,))
+    db.execute("DELETE FROM daily WHERE day < date('now', ?)",
+               (f"-{SUMMARY_RETENTION_DAYS} days",))
+    db.execute("DELETE FROM messages WHERE delivered_at IS NOT NULL AND delivered_at < ?",
+               (time.time() - 14 * 86400,))
+    db.execute("DELETE FROM backups WHERE reported_at IS NOT NULL AND reported_at < ?",
+               (time.time() - 30 * 86400,))
+    db.commit()

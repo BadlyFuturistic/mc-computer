@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""mccmd — run a Minecraft command via RCON, read from stdin.
+
+Reading from stdin means no shell on either end ever parses the command, so NBT
+braces, commas, quotes and apostrophes all survive intact.
+
+    echo 'summon zombie ~ ~ ~ {CustomName:{text:"Kevin"},Health:100f}' \
+      | ssh mc-public /opt/mc/mccmd
+
+Multiple lines run in order; blank lines and #-comments are skipped.
+"""
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+
+failed = False
+conn = Rcon()
+for raw in sys.stdin.read().splitlines():
+    cmd = raw.strip()
+    if not cmd or cmd.startswith("#"):
+        continue
+    out = conn.command(cmd)
+    err = ""
+    if out:
+        print(out)
+    if err:
+        print(err, file=sys.stderr)
+    # rcon-cli exits 0 even when Minecraft rejects the command, so surface that too.
+    if "Unknown or incomplete command" in out or "<--[HERE]" in out:
+        failed = True
+
+conn.close()
+sys.exit(1 if failed else 0)

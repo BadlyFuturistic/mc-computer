@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""mcwhere — list the named places in this world.
+
+  mcwhere                list every named waystone and waypoint
+  mcwhere farm           only those whose name matches "farm"
+
+Reads the waystone and JourneyMap data straight off disk (read-only, safe while the
+server is running) so named locations can be resolved without guessing coordinates.
+"""
+import gzip
+import io
+import struct
+import sys
+from pathlib import Path
+
+WORLD = Path("/opt/mc/data/world/data")
+WAYSTONES = WORLD / "waystones/waystones.dat"
+JM = [WORLD / "journeymap/player_waypoints.dat", WORLD / "journeymap/global_waypoints.dat"]
+
+
+def read_nbt(path: Path):
+    raw = path.read_bytes()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    f = io.BytesIO(raw)
+
+    def u1(): return struct.unpack(">B", f.read(1))[0]
+    def i4(): return struct.unpack(">i", f.read(4))[0]
+
+    def name():
+        n = struct.unpack(">H", f.read(2))[0]
+        return f.read(n).decode("utf-8", "replace")
+
+    def payload(t):
+        if t == 0: return None
+        if t == 1: return struct.unpack(">b", f.read(1))[0]
+        if t == 2: return struct.unpack(">h", f.read(2))[0]
+        if t == 3: return i4()
+        if t == 4: return struct.unpack(">q", f.read(8))[0]
+        if t == 5: return struct.unpack(">f", f.read(4))[0]
+        if t == 6: return struct.unpack(">d", f.read(8))[0]
+        if t == 7: return f.read(i4())
+        if t == 8: return name()
+        if t == 9:
+            et = u1(); n = i4()
+            return [payload(et) for _ in range(n)]
+        if t == 10:
+            d = {}
+            while True:
+                tt = u1()
+                if tt == 0: break
+                key = name()          # read the name before the payload, never inline
+                d[key] = payload(tt)
+            return d
+        if t == 11:
+            n = i4(); return [i4() for _ in range(n)]
+        if t == 12:
+            n = i4(); return [struct.unpack(">q", f.read(8))[0] for _ in range(n)]
+        raise ValueError(f"bad tag {t}")
+
+    t = u1()
+    if t == 0: return None
+    name()
+    return payload(t)
+
+
+def short_dim(d: str) -> str:
+    return (d or "").replace("minecraft:", "").replace("the_", "")
+
+
+def collect():
+    places = []
+
+    if WAYSTONES.exists():
+        try:
+            data = read_nbt(WAYSTONES) or {}
+            for w in data.get("data", {}).get("Waystones", []):
+                nm = (w.get("NameV2") or "").strip()
+                if not nm:
+                    continue
+                p = w.get("BlockPos") or [0, 0, 0]
+                places.append((nm, p[0], p[1], p[2], short_dim(w.get("World")), "waystone"))
+        except Exception as e:
+            print(f"warning: could not read waystones ({e})", file=sys.stderr)
+
+    def walk(node):
+        """Waypoints nest differently per file; find every dict with a name+pos."""
+        if isinstance(node, dict):
+            if "name" in node and isinstance(node.get("pos"), dict):
+                p = node["pos"]
+                nm = (node.get("name") or "").strip()
+                if nm:
+                    places.append((nm, p.get("x", 0), p.get("y", 0), p.get("z", 0),
+                                   short_dim(p.get("dimension")), "waypoint"))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    for path in JM:
+        if path.exists():
+            try:
+                walk(read_nbt(path))
+            except Exception as e:
+                print(f"warning: could not read {path.name} ({e})", file=sys.stderr)
+
+    seen, out = set(), []
+    for row in places:
+        key = (row[0].lower(), row[1], row[2], row[3])
+        if key not in seen:
+            seen.add(key)
+            out.append(row)
+    return sorted(out, key=lambda r: r[0].lower())
+
+
+def main():
+    term = " ".join(sys.argv[1:]).lower()
+    rows = [r for r in collect() if not term or term in r[0].lower()]
+    if not rows:
+        print(f"no named place matching {term!r}" if term else "no named places found")
+        return
+    for nm, x, y, z, dim, kind in rows:
+        print(f"{nm:<34} {x:>7} {y:>4} {z:>7}  {dim:<9} {kind}")
+
+
+if __name__ == "__main__":
+    main()

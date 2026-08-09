@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""mctp — teleport a player to a location, landing them somewhere they can stand.
+
+  mctp <player> <x> <y> <z> [dimension]
+
+Never drops anyone inside a wall. Force-loads the destination, searches the column for
+a spot with two blocks of headroom over solid ground (no lava, no water), teleports to
+the candidate nearest the requested height, then releases the chunk.
+
+Exits non-zero with a plain-English reason if there is nowhere safe to stand, so the
+caller can tell the player instead of burying them.
+"""
+import re
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+
+SEARCH = 48   # how far above and below the requested Y to look
+
+
+def rcon(*cmds: str) -> list[str]:
+    """Run commands over one RCON connection; return their outputs in order."""
+    with Rcon() as conn:
+        out = []
+        for c in cmds:
+            out.extend(conn.command(c).splitlines() or [""])
+        return [ln.strip() for ln in out]
+
+
+def main():
+    if len(sys.argv) < 5:
+        sys.exit("usage: mctp <player> <x> <y> <z> [dimension]")
+    player, x, y, z = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+    dim = sys.argv[5] if len(sys.argv) > 5 else "minecraft:overworld"
+    if ":" not in dim:
+        dim = f"minecraft:{dim}"
+    ctx = f"execute in {dim} run"
+
+    rcon(f"{ctx} forceload add {x} {z}")
+    try:
+        # One probe per candidate height: standable means air at Y and Y+1, something
+        # solid but not liquid at Y-1. Each hit drops a marker we can read back.
+        probes = []
+        for cy in range(y + SEARCH, y - SEARCH - 1, -1):
+            if not (-64 < cy < 320):
+                continue
+            probes.append(
+                f"{ctx} execute if block {x} {cy} {z} minecraft:air"
+                f" if block {x} {cy + 1} {z} minecraft:air"
+                f" unless block {x} {cy - 1} {z} minecraft:air"
+                f" unless block {x} {cy - 1} {z} minecraft:lava"
+                f" unless block {x} {cy - 1} {z} minecraft:water"
+                f" run summon marker {x} {cy} {z} {{Tags:[\"tpprobe\"]}}"
+            )
+        rcon(*probes)
+
+        out = rcon(f"{ctx} execute as @e[tag=tpprobe] run data get entity @s Pos")
+        ys = []
+        for line in out:
+            m = re.search(r"\[.*?d,\s*(-?[\d.]+)d,", line)
+            if m:
+                ys.append(int(float(m.group(1))))
+        rcon("kill @e[tag=tpprobe]")
+
+        if not ys:
+            sys.exit(
+                f"no safe footing within {SEARCH} blocks of y={y} at {x},{z} "
+                f"in {dim.split(':')[-1]} — nothing was moved"
+            )
+
+        best = min(ys, key=lambda cy: abs(cy - y))
+        res = rcon(f"{ctx} tp {player} {x + 0.5} {best} {z + 0.5}")
+        joined = " ".join(res).lower()
+        if "no entity" in joined or "no player" in joined or "not found" in joined:
+            sys.exit(f"safe spot found at y={best}, but no player named {player} is online")
+        note = "" if best == y else f" (adjusted from y={y})"
+        print(f"{player} -> {x} {best} {z} in {dim.split(':')[-1]}{note}")
+    finally:
+        rcon(f"{ctx} forceload remove {x} {z}")
+
+
+if __name__ == "__main__":
+    main()

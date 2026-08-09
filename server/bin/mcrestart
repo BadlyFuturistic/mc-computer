@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""mcrestart — restart the Minecraft server with an announced countdown.
+
+  mcrestart              60-second countdown (default)
+  mcrestart 30           30-second countdown
+  mcrestart 0            immediately, no countdown
+  mcrestart 80 --recreate    recreate the container (needed after compose.yaml edits)
+  mcrestart cancel       abort a countdown in progress
+
+Warnings go out at the starting figure and then at every remaining multiple of 15:
+80 announces at 80, 75, 60, 45, 30, 15. Each one is printed to stdout as it is sent,
+so a human running this watches it tick down in real time.
+
+  --detach   return immediately and count down in the background. Used by the bot, so
+             a turn is never blocked for a minute and cannot half-announce a restart.
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PIDFILE = Path("/tmp/mcrestart.pid")
+SAY = "/opt/mc/compsay"
+STEP = 15
+FINAL_TICKS = 5      # count down every second for the last this-many seconds
+FINAL_PAUSE = 1.0    # let 'Restarting now!' land before the server goes away
+
+
+def announce(msg: str, quiet: bool) -> None:
+    r = subprocess.run([SAY, msg], capture_output=True, text=True)
+    if r.returncode != 0:
+        # Silent chat failures are how a countdown ends up warning nobody.
+        sys.stderr.write(f"WARNING: could not announce in game: "
+                         f"{(r.stderr or r.stdout or '').strip()[:200]}\n")
+    if not quiet:
+        print(msg, flush=True)
+
+
+def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Try directly first (works for a user in the docker group), then via sudo.
+    The service account has no docker access and relies on the sudoers rule."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 and os.geteuid() != 0:
+        r = subprocess.run(["sudo", "-n"] + cmd, capture_output=True, text=True)
+    return r
+
+
+def do_restart(recreate: bool) -> None:
+    if recreate:
+        steps = [["/usr/bin/docker", "compose", "-f", "/opt/mc/compose.yaml", "down"],
+                 ["/usr/bin/docker", "compose", "-f", "/opt/mc/compose.yaml", "up", "-d"]]
+    else:
+        steps = [["/usr/bin/docker", "restart", "mc"]]
+    for cmd in steps:
+        r = _run(cmd)
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout or "").strip()[:300]
+            sys.stderr.write(f"RESTART FAILED: {' '.join(cmd)}\n{msg}\n")
+            sys.exit(1)
+    print("server restarted", flush=True)
+
+
+def marks(total: int) -> list[int]:
+    """Seconds remaining at each warning.
+
+    The starting figure, then every multiple of 15 above 5, then a tick for each of
+    the last five seconds so nobody is caught mid-swing by a silent gap.
+    """
+    out = [total]
+    t = (total - 1) // STEP * STEP
+    while t > FINAL_TICKS:
+        out.append(t)
+        t -= STEP
+    out += [s for s in range(FINAL_TICKS, 0, -1) if s < total]
+    seen, ordered = set(), []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            ordered.append(s)
+    return ordered
+
+
+def countdown(total: int, recreate: bool, quiet: bool) -> None:
+    PIDFILE.write_text(str(os.getpid()))
+    try:
+        points = marks(total)
+        for i, remaining in enumerate(points):
+            if i == 0:
+                announce(f"Server restarting in {remaining} seconds.", quiet)
+            else:
+                announce(f"Restarting in {remaining} seconds.", quiet)
+            nxt = points[i + 1] if i + 1 < len(points) else 0
+            time.sleep(remaining - nxt)
+        announce("Restarting now!", quiet)
+        time.sleep(FINAL_PAUSE)
+        do_restart(recreate)
+    finally:
+        PIDFILE.unlink(missing_ok=True)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    if args and args[0] == "cancel":
+        if not PIDFILE.exists():
+            sys.exit("no restart is pending")
+        try:
+            os.kill(int(PIDFILE.read_text()), signal.SIGTERM)
+        except (ProcessLookupError, ValueError):
+            pass
+        PIDFILE.unlink(missing_ok=True)
+        announce("Restart cancelled.", quiet=False)
+        return
+
+    recreate = "--recreate" in args
+    detach = "--detach" in args
+    positional = [a for a in args if not a.startswith("-")]
+    try:
+        seconds = int(positional[0]) if positional else 60
+    except ValueError:
+        sys.exit(f"not a number of seconds: {positional[0]}")
+    if seconds < 0:
+        sys.exit("seconds cannot be negative")
+
+    if PIDFILE.exists():
+        sys.exit("a restart is already counting down — run 'mcrestart cancel' first")
+
+    if seconds == 0:
+        announce("Restarting now.", quiet=detach)
+        do_restart(recreate)
+        if detach:
+            print("restarted immediately (no countdown)")
+        return
+
+    if detach:
+        if os.fork() > 0:
+            print(f"countdown started: restarting in {seconds}s "
+                  f"({'recreate' if recreate else 'restart'}) — 'mcrestart cancel' to abort")
+            return
+        os.setsid()
+        countdown(seconds, recreate, quiet=True)
+    else:
+        countdown(seconds, recreate, quiet=False)
+
+
+if __name__ == "__main__":
+    main()

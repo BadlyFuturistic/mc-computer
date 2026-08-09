@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""mcask — ask the Minecraft computer something from a terminal.
+
+  mcask "how many diamonds does PlayerName have"
+  mcask --new "..."      start clean instead of forking the live session
+  echo "..." | mcask     read the question from stdin
+
+Forks the live in-game session, so this has the same system prompt, the same tools,
+the same memory database and the full conversation history as of right now — without
+interrupting whatever the bot is doing for a player and without waiting for it. The
+fork's own work stays in the fork; the in-game session is unaffected.
+
+Replies come back on stdout, not into Minecraft chat.
+"""
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mcbot")
+
+SERVICE_USER = "mcbot"
+SERVICE_HOME = "/var/lib/mcbot"
+
+# Sessions are stored per user under $HOME/.claude, so forking the in-game
+# conversation is only possible as the account that owns it, with the same HOME the
+# service runs with. Re-exec under that account rather than making the caller do it.
+if os.environ.get("USER") != SERVICE_USER and os.geteuid() != 0:
+    import pwd
+    try:
+        target_uid = pwd.getpwnam(SERVICE_USER).pw_uid
+    except KeyError:
+        target_uid = None
+    if target_uid is not None and os.geteuid() != target_uid:
+        rc = os.spawnvp(os.P_WAIT, "sudo",
+                        ["sudo", "-n", "-u", SERVICE_USER,
+                         f"HOME={SERVICE_HOME}", os.path.abspath(__file__), *sys.argv[1:]])
+        if rc == 0:
+            sys.exit(0)
+        sys.exit(
+            f"could not run as {SERVICE_USER}.\n"
+            f"  The in-game session belongs to {SERVICE_USER}; forking it requires "
+            f"running as that account.\n"
+            f"  Add to /etc/sudoers.d/mcbot:\n"
+            f"    {os.environ.get('USER', 'you')} ALL=({SERVICE_USER}) NOPASSWD: "
+            f"SETENV: {os.path.abspath(__file__)}"
+        )
+
+os.environ.setdefault("HOME", SERVICE_HOME)
+
+# The SDK lives in the service's virtualenv, not in system python, so re-exec into
+# it rather than making callers pick an interpreter.
+#
+# Test sys.prefix, not the interpreter path: a venv's bin/python is a symlink to the
+# system binary, so comparing resolved paths says "already there" when it is not, and
+# the re-exec never fires.
+VENV = "/opt/mcbot/venv"
+VENV_PYTHON = f"{VENV}/bin/python"
+if sys.prefix != VENV and os.access(VENV_PYTHON, os.X_OK):
+    os.execv(VENV_PYTHON, [VENV_PYTHON, os.path.abspath(__file__), *sys.argv[1:]])
+
+try:
+    import claude_agent_sdk  # noqa: F401
+except ModuleNotFoundError:
+    reason = (f"{VENV_PYTHON} is not readable by {os.environ.get('USER', 'this user')} — "
+              f"try: sudo chgrp -R $(id -gn) {VENV.rsplit('/', 1)[0]} && "
+              f"sudo chmod -R g+rX {VENV.rsplit('/', 1)[0]}"
+              if not os.access(VENV_PYTHON, os.X_OK)
+              else f"the agent SDK is not installed in {VENV}")
+    sys.exit(f"cannot reach the agent SDK: {reason}")
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+)
+
+PROMPT_FILE = Path("/opt/mcbot/minecraft-computer.md")
+SESSION_FILE = Path("/var/lib/mcbot/session.id")
+ENV_FILE = Path("/etc/mcbot/env")
+MODEL = os.environ.get("MCBOT_MODEL", "opus")
+
+TERMINAL_MODE = """
+
+You are being addressed directly by the server administrator through a terminal, not
+in Minecraft chat. For this conversation only:
+
+- Answer in plain text. Do not use compsay; nothing you write here reaches players.
+- <disclosure> does not apply. Nobody else can read this, so infrastructure questions
+  may be answered fully and honestly.
+- Be direct and complete rather than chat-brief, but do not pad.
+- You may still act on the world if asked. Say what you did.
+"""
+
+
+def load_env() -> None:
+    """Take the API key from the service's environment file if it is readable."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
+                return
+    except (OSError, PermissionError):
+        pass
+    sys.exit(
+        "no ANTHROPIC_API_KEY: set it, or run as a user who can read /etc/mcbot/env"
+    )
+
+
+async def run(question: str, fresh: bool, verbose: bool) -> int:
+    system_prompt = PROMPT_FILE.read_text() + TERMINAL_MODE
+    opts = dict(
+        system_prompt=system_prompt,
+        model=MODEL,
+        allowed_tools=["Bash"],
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        cwd=SERVICE_HOME,
+    )
+
+    sid = None
+    if not fresh and SESSION_FILE.exists():
+        sid = SESSION_FILE.read_text().strip() or None
+    if sid:
+        # fork_session copies the live conversation and runs independently, so the
+        # in-game session is neither interrupted nor waited on.
+        opts.update(resume=sid, fork_session=True)
+
+    said = False
+    async with ClaudeSDKClient(options=ClaudeAgentOptions(**opts)) as client:
+        await client.query(question)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        print(block.text.strip(), flush=True)
+                        said = True
+                    elif verbose and isinstance(block, ToolUseBlock):
+                        cmd = (block.input or {}).get("command", "")
+                        print(f"  · {cmd[:160]}", file=sys.stderr, flush=True)
+            elif isinstance(msg, ResultMessage):
+                if msg.is_error:
+                    print(f"error: {msg.subtype}", file=sys.stderr)
+                    return 1
+                if verbose and isinstance(getattr(msg, "total_cost_usd", None), float):
+                    print(f"  · ${msg.total_cost_usd:.4f}", file=sys.stderr)
+    if not said:
+        print("(no answer)", file=sys.stderr)
+    return 0
+
+
+def main() -> None:
+    args = [a for a in sys.argv[1:]]
+    fresh = "--new" in args
+    verbose = "-v" in args or "--verbose" in args
+    question = " ".join(a for a in args if not a.startswith("-")).strip()
+    if not question and not sys.stdin.isatty():
+        question = sys.stdin.read().strip()
+    if not question:
+        sys.exit('usage: mcask [--new] [-v] "your question"')
+
+    load_env()
+    if not PROMPT_FILE.exists():
+        sys.exit(f"prompt file missing: {PROMPT_FILE}")
+    sys.exit(asyncio.run(run(question, fresh, verbose)))
+
+
+if __name__ == "__main__":
+    main()

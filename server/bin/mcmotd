@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""mcmotd — set the server MOTD in compose.yaml.
+
+  mcmotd "New message here"           set it, no restart
+  mcmotd "New message" -r             set it, then recreate after a 60s countdown
+  mcmotd "New message" -r 30          ...after 30 seconds
+  mcmotd "New message" -r 0           ...immediately
+  mcmotd                              show the current MOTD
+
+A MOTD change only reaches players once the container is recreated, so -r uses
+`mcrestart --recreate`; a plain `docker restart` would not pick it up.
+"""
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+COMPOSE = Path("/opt/mc/compose.yaml")
+PATTERN = re.compile(r'^(\s*MOTD:\s*)"(.*)"\s*$', re.M)
+
+
+def current() -> str | None:
+    m = PATTERN.search(COMPOSE.read_text())
+    return m.group(2) if m else None
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        motd = current()
+        print(motd if motd is not None else "no MOTD line found in compose.yaml")
+        return
+
+    delay = None
+    if "-r" in args:
+        i = args.index("-r")
+        rest = args[i + 1:]
+        delay = 60
+        if rest and rest[0].lstrip("-").isdigit():
+            delay = int(rest[0])
+            del args[i + 1]
+        del args[i]
+
+    text = " ".join(args).strip()
+    if not text:
+        sys.exit('usage: mcmotd "your message" [-r [seconds]]')
+    if '"' in text:
+        sys.exit("MOTD cannot contain double quotes")
+
+    body = COMPOSE.read_text()
+    if not PATTERN.search(body):
+        sys.exit("no MOTD line found in compose.yaml")
+    old = current()
+    COMPOSE.write_text(PATTERN.sub(lambda m: f'{m.group(1)}"{text}"', body, count=1))
+    print(f'MOTD: "{old}" -> "{text}"')
+
+    if delay is None:
+        print("not restarting — the new MOTD appears after the next container recreate")
+        return
+
+    # Foreground so the countdown is visible to whoever ran this.
+    subprocess.run(["/opt/mc/mcrestart", str(delay), "--recreate"])
+
+
+if __name__ == "__main__":
+    main()

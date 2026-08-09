@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""mcbackup — take a live backup of the world, without stopping the server.
+
+Flushes the world to disk, disables saving so nothing changes mid-archive, tars it,
+then re-enables saving. No Docker, no downtime.
+
+Runs as the owner of /opt/mc (via sudoers when the bot calls it), so the archive it
+produces is owned by that user — the bot can create a backup but can never modify or
+delete one afterwards. Retention is left entirely to the nightly job: this never
+deletes anything.
+"""
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+
+BACKUPS = Path("/opt/mc/backups")
+WORLD_PARENT = Path("/opt/mc/data")
+
+
+def main() -> None:
+    BACKUPS.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    out = BACKUPS / f"mc-backup-{stamp}.tar.gz"
+    if out.exists():
+        sys.exit(f"{out.name} already exists")
+
+    with Rcon() as r:
+        r.command("save-off")
+        r.command("save-all flush")
+        try:
+            proc = subprocess.run(
+                f"tar -cf - -C {WORLD_PARENT} world | pigz > {out}",
+                shell=True, capture_output=True, text=True,
+            )
+        finally:
+            # Always re-enable saving, even if the archive failed, or the server
+            # would silently stop persisting anything from here on.
+            r.command("save-on")
+
+    if proc.returncode != 0:
+        out.unlink(missing_ok=True)
+        sys.exit(f"backup failed: {(proc.stderr or '').strip()[:300]}")
+
+    size = out.stat().st_size / 1024**3
+    print(f"backup written: {out.name} ({size:.2f} GB)")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""compsay — send a line to Minecraft chat as the computer.
+
+Usage:  compsay "message"
+        compsay --to PlayerName "message"
+
+Prefixes every line with [comp] so players can tell at a glance what is machine
+output. Uses tellraw, so the server never prepends its own sender tag, and builds
+the JSON with a real serializer so quotes and apostrophes survive intact.
+"""
+import json
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+
+PREFIX = "[comp] "
+PREFIX_COLOR = "dark_aqua"
+BODY_COLOR = "aqua"
+LIMIT = 200  # well under Minecraft's 256-char ceiling, prefix included
+
+args = sys.argv[1:]
+target = "@a"
+while args and args[0] == "--to":
+    target = args[1]
+    args = args[2:]
+
+msg = " ".join(args)
+if not msg:
+    sys.exit('usage: compsay [--to PLAYER] "message"')
+
+
+def chunks(text: str):
+    """Split on word boundaries so a long line is never rejected outright."""
+    budget = LIMIT - len(PREFIX)
+    if len(text) <= budget:
+        return [text]
+    out, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > budget:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
+for part in chunks(msg):
+    payload = json.dumps(
+        [
+            {"text": PREFIX, "color": PREFIX_COLOR, "italic": False},
+            {"text": part, "color": BODY_COLOR, "italic": False},
+        ],
+        ensure_ascii=False,
+    )
+    with Rcon() as r:
+        out = r.command(f"tellraw {target} {payload}")
+    if out:
+        sys.stdout.write(out + "\n")

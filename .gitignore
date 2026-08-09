@@ -1,0 +1,26 @@
+# Secrets — never commit
+*.key
+*.pass
+*.env
+env
+api.key
+.mc-api-key
+id_ed25519*
+
+# Runtime state
+logs/
+*.log
+*.jsonl
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# World data / backups / large artefacts
+*.tar.gz
+*.zip
+*.nbt
+*.dat
+
+# World-specific prompt additions stay local
+server/mcbot/local-lore.md

@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""mcbag — list what is inside a player's Sophisticated Backpacks.
+
+  mcbag <player>
+
+A backpack item carries only a storage_uuid; its contents live in a world-level store.
+This resolves the pointer and prints what is actually inside. Read-only.
+
+Contents are flushed to disk on save, so this runs `save-all flush` first — otherwise
+it would report the state from the last autosave.
+"""
+import gzip
+import io
+import re
+import struct
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+from pathlib import Path
+
+STORE = Path(
+    "/opt/mc/data/world/dimensions/minecraft/overworld/data"
+    "/sophisticatedbackpacks/backpack_storage.dat"
+)
+
+
+def read_nbt(path: Path):
+    raw = path.read_bytes()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    f = io.BytesIO(raw)
+
+    def u1(): return struct.unpack(">B", f.read(1))[0]
+    def i4(): return struct.unpack(">i", f.read(4))[0]
+
+    def nm():
+        n = struct.unpack(">H", f.read(2))[0]
+        return f.read(n).decode("utf-8", "replace")
+
+    def payload(t):
+        if t == 0: return None
+        if t == 1: return struct.unpack(">b", f.read(1))[0]
+        if t == 2: return struct.unpack(">h", f.read(2))[0]
+        if t == 3: return i4()
+        if t == 4: return struct.unpack(">q", f.read(8))[0]
+        if t == 5: return struct.unpack(">f", f.read(4))[0]
+        if t == 6: return struct.unpack(">d", f.read(8))[0]
+        if t == 7: return f.read(i4())
+        if t == 8: return nm()
+        if t == 9:
+            et = u1(); n = i4()
+            return [payload(et) for _ in range(n)]
+        if t == 10:
+            d = {}
+            while True:
+                tt = u1()
+                if tt == 0: break
+                key = nm()
+                d[key] = payload(tt)
+            return d
+        if t == 11:
+            n = i4(); return [i4() for _ in range(n)]
+        if t == 12:
+            n = i4(); return [struct.unpack(">q", f.read(8))[0] for _ in range(n)]
+        raise ValueError(f"bad tag {t}")
+
+    t = u1()
+    if t == 0: return None
+    nm()
+    return payload(t)
+
+
+def uuid_from_ints(ints) -> str:
+    """Minecraft stores UUIDs as four signed 32-bit ints, most significant first."""
+    a, b, c, d = (i & 0xFFFFFFFF for i in ints)
+    hi, lo = (a << 32) | b, (c << 32) | d
+    h = f"{hi:016x}{lo:016x}"
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def rcon(cmd: str) -> str:
+    with Rcon() as r:
+        return r.command(cmd)
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit("usage: mcbag <player>")
+    player = sys.argv[1]
+
+    rcon("save-all flush")   # make sure the on-disk store is current
+
+    inv = rcon(f"data get entity {player} Inventory")
+    if "No entity was found" in inv or not inv.strip():
+        sys.exit(f"no player named {player} is online")
+
+    uuids = [uuid_from_ints([int(n) for n in m])
+             for m in re.findall(
+                 r'"sophisticatedcore:storage_uuid":\s*\[I;\s*(-?\d+),\s*(-?\d+),'
+                 r'\s*(-?\d+),\s*(-?\d+)\]', inv)]
+    if not uuids:
+        print(f"{player} is not carrying any backpacks")
+        return
+
+    if not STORE.exists():
+        sys.exit(f"backpack store not found at {STORE}")
+    contents = (read_nbt(STORE) or {}).get("data", {}).get("backpackContents", {})
+
+    for n, uid in enumerate(uuids, 1):
+        entry = contents.get(uid)
+        print(f"\n=== backpack {n} of {len(uuids)}  ({uid[:8]})")
+        if not entry:
+            print("    no stored contents — never opened, or empty")
+            continue
+        stacks = (entry.get("inventory") or {}).get("stacks") or []
+        items = []
+        for st in stacks:
+            if not isinstance(st, dict):
+                continue
+            item = st.get("id") or (st.get("item") or {}).get("id")
+            count = st.get("count") or st.get("Count") or 1
+            if item:
+                items.append((str(item).replace("minecraft:", ""), count))
+        if not items:
+            print("    empty")
+            continue
+        for item, count in items:
+            print(f"    {count:>5} x {item}")
+
+
+if __name__ == "__main__":
+    main()

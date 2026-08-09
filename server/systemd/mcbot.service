@@ -1,0 +1,57 @@
+[Unit]
+Description=Minecraft Computer bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcbot
+Group=mcbot
+# Must be writable: the agent SDK creates .claude/ in its working directory, and
+# ProtectSystem=strict makes everything read-only except ReadWritePaths below.
+WorkingDirectory=/var/lib/mcbot
+Environment=HOME=/var/lib/mcbot
+Environment=XDG_CONFIG_HOME=/var/lib/mcbot/.config
+Environment=XDG_CACHE_HOME=/var/lib/mcbot/.cache
+
+# Secrets live in root-owned files readable only by mcbot, never in this unit and
+# never in compose.yaml, which this service cannot read at all.
+EnvironmentFile=/etc/mcbot/env
+Environment=MCBOT_PROMPT=/opt/mcbot/minecraft-computer.md
+Environment=MCBOT_SERVER_LOG=/opt/mc/data/logs/latest.log
+Environment=MCBOT_LOG_DIR=/var/lib/mcbot/logs
+ExecStart=/opt/mcbot/venv/bin/python /opt/mcbot/comp-daemon.py
+
+Restart=always
+RestartSec=10
+
+# ---- hardening -------------------------------------------------------------
+NoNewPrivileges=false          # sudo needs this; the sudoers rule is two fixed commands
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false   # the bundled node runtime JITs
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+# The only writable paths in the entire filesystem:
+ReadWritePaths=/var/lib/mcbot
+ReadWritePaths=/opt/mc/data/world/datapacks/mcbuilds
+
+# Backups are readable so the bot can verify the nightly job, but the whole
+# filesystem outside ReadWritePaths is mounted read-only, so it can never modify
+# or delete one. compose.yaml stays hidden because it holds the RCON password.
+InaccessiblePaths=/opt/mc/compose.yaml
+
+[Install]
+WantedBy=multi-user.target

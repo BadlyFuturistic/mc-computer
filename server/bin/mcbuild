@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""mcbuild — manage the catalog of structures the computer can place.
+
+  mcbuild install <file.nbt> [more.nbt ...]   add structures to the catalog
+  mcbuild install --dir <folder>              add every .nbt in a folder
+  mcbuild list                                what's available to place
+  mcbuild place <name> <x> <y> <z>            drop one into the world
+  mcbuild remove <name>                       take one out of the catalog
+  mcbuild rename <old> <new>                  give one a sensible name
+  mcbuild describe <name> "what it is"        note what it looks like
+
+Structures live in a datapack, so this touches nothing on the client side.
+Names are normalised: "Big Castle (v2).nbt" becomes "big_castle_v2".
+"""
+import gzip
+import hashlib
+import json
+import re
+import shutil
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon
+from pathlib import Path
+
+PACK = Path("/opt/mc/data/world/datapacks/mcbuilds")
+STRUCT = PACK / "data/mcbuilds/structure"
+NAMESPACE = "mcbuilds"
+NOTES = PACK / "descriptions.json"
+# The 48-per-axis cap is a structure-block UI limit only. Verified on this server:
+# /place template loads datapack structures of any size in one piece.
+BIG = 128  # purely informational — large builds are slow to place, not truncated
+
+
+def rcon(cmd: str) -> str:
+    with Rcon() as r:
+        return r.command(cmd)
+
+
+def slug(name: str) -> str:
+    s = re.sub(r"\.nbt$", "", name, flags=re.I).lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    return s or "unnamed"
+
+
+def dimensions(path: Path):
+    """Read the structure's size triple without a full NBT parse."""
+    try:
+        raw = path.read_bytes()
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        i = raw.find(b"\x09\x00\x04size")           # TAG_List named "size"
+        if i < 0:
+            return None
+        p = i + 7
+        if raw[p] != 3:                              # element type must be TAG_Int
+            return None
+        n = int.from_bytes(raw[p + 1:p + 5], "big")
+        if n != 3:
+            return None
+        p += 5
+        return tuple(int.from_bytes(raw[p + 4 * k:p + 4 * k + 4], "big") for k in range(3))
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return None
+
+
+def ensure_pack():
+    STRUCT.mkdir(parents=True, exist_ok=True)
+    meta = PACK / "pack.mcmeta"
+    if not meta.exists():
+        # pack_format is validated loosely; the server warns rather than refusing,
+        # and supported_formats keeps it loading across version bumps.
+        meta.write_text(
+            '{\n  "pack": {\n    "description": "Structure catalog",\n'
+            '    "pack_format": 61,\n'
+            '    "supported_formats": {"min_inclusive": 26, "max_inclusive": 99}\n'
+            "  }\n}\n"
+        )
+        print(f"created datapack at {PACK}")
+
+
+def install(paths):
+    ensure_pack()
+    added = []
+    for raw in paths:
+        src = Path(raw)
+        if not src.is_file():
+            print(f"skip {src}: not a file", file=sys.stderr)
+            continue
+        if src.suffix.lower() != ".nbt":
+            print(f"skip {src.name}: not a .nbt structure file", file=sys.stderr)
+            continue
+        # Skip anything already in the catalog byte-for-byte, whatever it's called
+        # now — re-running an install must not resurrect pre-rename duplicates.
+        digest = hashlib.sha256(src.read_bytes()).hexdigest()
+        existing = next(
+            (q for q in catalog()
+             if hashlib.sha256(q.read_bytes()).hexdigest() == digest),
+            None,
+        )
+        if existing:
+            print(f"already installed as {NAMESPACE}:{existing.stem} — skipping {src.name}")
+            continue
+
+        name = slug(src.name)
+        dst = STRUCT / f"{name}.nbt"
+        shutil.copy2(src, dst)
+        dims = dimensions(dst)
+        note = ""
+        if dims:
+            note = f"  {dims[0]}x{dims[1]}x{dims[2]}"
+            if max(dims) > BIG:
+                note += "  [very large — placement takes a moment]"
+        else:
+            note = "  [could not read size — may not be a valid structure file]"
+        added.append(name)
+        print(f"installed {NAMESPACE}:{name}{note}")
+    if added:
+        print(rcon("reload"))
+    return added
+
+
+def notes() -> dict:
+    if NOTES.exists():
+        try:
+            return json.loads(NOTES.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def set_note(name: str, text: str) -> None:
+    d = notes()
+    d[name] = text
+    NOTES.write_text(json.dumps(d, indent=2, sort_keys=True))
+
+
+def catalog():
+    if not STRUCT.is_dir():
+        return []
+    return sorted(p for p in STRUCT.glob("*.nbt"))
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+
+    if cmd == "install":
+        if args and args[0] == "--dir":
+            folder = Path(args[1])
+            files = sorted(folder.glob("*.nbt")) if folder.is_dir() else []
+            if not files:
+                sys.exit(f"no .nbt files in {folder}")
+            install(files)
+        elif args:
+            install(args)
+        else:
+            sys.exit("usage: mcbuild install <file.nbt> | --dir <folder>")
+
+    elif cmd == "list":
+        entries = catalog()
+        if not entries:
+            print("catalog is empty — install some .nbt structures first")
+            return
+        d = notes()
+        for p in entries:
+            dims = dimensions(p)
+            size = f"{dims[0]}x{dims[1]}x{dims[2]}" if dims else "size unknown"
+            print(f"{NAMESPACE}:{p.stem:<26} {size:>14}   {d.get(p.stem, '')}")
+
+    elif cmd == "place":
+        if len(args) != 4:
+            sys.exit("usage: mcbuild place <name> <x> <y> <z>")
+        name, x, y, z = args
+        name = name.split(":")[-1]
+        if not (STRUCT / f"{name}.nbt").exists():
+            sys.exit(f"no such structure: {name} (try: mcbuild list)")
+        print(rcon(f"place template {NAMESPACE}:{name} {x} {y} {z}"))
+
+    elif cmd == "rename":
+        if len(args) != 2:
+            sys.exit("usage: mcbuild rename <old> <new>")
+        old, new = (a.split(":")[-1] for a in args)
+        src, dst = STRUCT / f"{old}.nbt", STRUCT / f"{slug(new)}.nbt"
+        if not src.exists():
+            sys.exit(f"no such structure: {old}")
+        src.rename(dst)
+        d = notes()
+        if old in d:
+            d[dst.stem] = d.pop(old)
+            NOTES.write_text(json.dumps(d, indent=2, sort_keys=True))
+        print(f"{old} -> {dst.stem}")
+        print(rcon("reload"))
+
+    elif cmd == "describe":
+        if len(args) < 2:
+            sys.exit('usage: mcbuild describe <name> "what it is"')
+        name = args[0].split(":")[-1]
+        if not (STRUCT / f"{name}.nbt").exists():
+            sys.exit(f"no such structure: {name}")
+        set_note(name, " ".join(args[1:]))
+        print(f"described {name}")
+
+    elif cmd == "remove":
+        if not args:
+            sys.exit("usage: mcbuild remove <name>")
+        target = STRUCT / f"{args[0].split(':')[-1]}.nbt"
+        if not target.exists():
+            sys.exit(f"no such structure: {args[0]}")
+        target.unlink()
+        print(f"removed {args[0]}")
+        print(rcon("reload"))
+
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
