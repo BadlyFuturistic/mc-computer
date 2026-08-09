@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep world data readable by the mcbot service account
+
+[Service]
+Type=oneshot
+# The Minecraft server rewrites these files at mode 0600, and a file's group bits ARE
+# its ACL mask — so a 0600 rewrite silently masks the bot's read entry to nothing. The
+# entry survives; its effect does not. Reapplying both the entry and the mask restores
+# it. Scoped to the small, frequently-rewritten data directories, not the whole world.
+ExecStart=/usr/bin/setfacl -R -m u:mcbot:rX -m m::rX -m d:u:mcbot:rX -m d:m::rX /opt/mc/data/world/data
+ExecStart=/usr/bin/setfacl -R -m u:mcbot:rX -m m::rX -m d:u:mcbot:rX -m d:m::rX /opt/mc/data/world/dimensions
+ExecStart=/usr/bin/setfacl -R -m u:mcbot:rX -m m::rX /opt/mc/backups

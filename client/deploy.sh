@@ -40,6 +40,7 @@ scp -q "$REPO/server/mcbot/comp-daemon.py"        "$HOST:$STAGE/comp-daemon.py"
 scp -q "$REPO/server/mcbot/memory.py"             "$HOST:$STAGE/memory.py"
 scp -q "$REPO/server/mcbot/minecraft-computer.md" "$HOST:$STAGE/minecraft-computer.md"
 scp -q "$REPO/server/systemd/mcbot.service"       "$HOST:$STAGE/mcbot.service"
+scp -q "$REPO"/server/systemd/mcbot-acl.*         "$HOST:$STAGE/"
 scp -q "$REPO/server/setup/mcbot-setup.sh"        "$HOST:$STAGE/mcbot-setup.sh"
 
 if [[ "$RUN_SETUP" == true ]]; then

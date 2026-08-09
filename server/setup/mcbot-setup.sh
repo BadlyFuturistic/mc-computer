@@ -121,9 +121,14 @@ echo "==> let the admin read the program dir (needed to run mcask from a termina
 chgrp -R "$OWNER" "$BOT"
 chmod -R g+rX "$BOT"
 
+echo "==> ACL refresh timer"
+install -o root -g root -m 644 "$STAGE/mcbot-acl.service" /etc/systemd/system/mcbot-acl.service
+install -o root -g root -m 644 "$STAGE/mcbot-acl.timer"   /etc/systemd/system/mcbot-acl.timer
+
 echo "==> service"
 install -o root -g root -m 644 "$STAGE/mcbot.service" /etc/systemd/system/mcbot.service
 systemctl daemon-reload
+systemctl enable --now mcbot-acl.timer
 systemctl enable --now mcbot
 
 echo

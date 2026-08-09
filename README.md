@@ -93,7 +93,16 @@ documented here because a stale permission produces a *quiet* failure, not an er
 undone within minutes. A default ACL on the directory makes newly created files
 inherit read access:
 
-    setfacl -R -m u:mcbot:rX -m d:u:mcbot:rX /opt/mc/data /opt/mc/backups
+    setfacl -R -m u:mcbot:rX -m m::rX -m d:u:mcbot:rX -m d:m::rX /opt/mc/data
+
+The `m::rX` part is essential and easy to miss. A file's group-permission bits *are* its
+ACL mask, so a file rewritten at mode `0600` gets `mask::---`, which masks the bot's read
+entry down to nothing — `getfacl` still lists the entry, marked `#effective:---`, while
+granting no access at all.
+
+Because the server rewrites these files at `0600` on every save, this does not hold on its
+own. `mcbot-acl.timer` reapplies it every two minutes over the small, frequently-rewritten
+data directories.
 
 Granting this on all of `data/` rather than per-mod is intentional — otherwise every
 new mod whose data the bot needs to read requires another permission fix.
