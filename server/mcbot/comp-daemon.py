@@ -49,6 +49,7 @@ LOG_DIR = Path(os.environ.get("MCBOT_LOG_DIR", "/var/lib/mcbot/logs"))
 ADMIN_ENV = "MCBOT_ADMIN"
 SESSION_FILE = Path(os.environ.get("MCBOT_SESSION_FILE", "/var/lib/mcbot/session.id"))
 MODEL = os.environ.get("MCBOT_MODEL", "sonnet")   # escalate to opus per-task, see mcthink
+EFFORT = os.environ.get("MCBOT_EFFORT", "low")   # low|medium|high — medium if it gets sloppy
 LIMITS_FILE = Path("/etc/mcbot/limits")            # root-owned; the bot cannot edit it
 
 # Rollover happens only during silence, never mid-conversation: a turn-count cap would
@@ -454,6 +455,11 @@ async def main() -> None:
     opts = dict(
         system_prompt=system_prompt,
         model=MODEL,
+        # Routine chat needs lookups and a sentence, not deliberation. Thinking bills as
+        # output, several times the input rate, on every one of the ~4 requests a turn
+        # makes — which is most of what a simple question costs. Hard problems go to
+        # mcthink, which runs at full effort deliberately.
+        effort=EFFORT,
         allowed_tools=["Bash"],
         permission_mode="bypassPermissions",
         setting_sources=[],          # ignore local CLAUDE.md / settings, like --bare

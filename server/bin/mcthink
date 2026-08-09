@@ -39,6 +39,7 @@ from claude_agent_sdk import (  # noqa: E402
 
 STRONG_MODEL = os.environ.get("MCBOT_STRONG_MODEL", "opus")
 LIMITS_FILE = Path("/etc/mcbot/limits")
+MAX_CALL_USD = float(os.environ.get("MCBOT_MAX_CALL_USD", "1.00"))
 ENV_FILE = Path("/etc/mcbot/env")
 
 SYSTEM = """You are the reasoning half of a Minecraft server assistant. You have been
@@ -89,6 +90,9 @@ async def run(question: str, context: str) -> int:
     opts = ClaudeAgentOptions(
         system_prompt=SYSTEM,
         model=STRONG_MODEL,
+        # Deliberation is the entire point of escalating, so no effort reduction here.
+        # A single call, so a spend ceiling is unambiguous: it caps this one question.
+        max_budget_usd=MAX_CALL_USD,
         allowed_tools=["Bash"],
         permission_mode="bypassPermissions",
         setting_sources=[],
