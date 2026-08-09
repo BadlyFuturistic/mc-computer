@@ -32,7 +32,7 @@ ssh "$HOST" "mkdir -p $STAGE"
 if [[ "$PROMPT_ONLY" == false ]]; then
     echo "==> server tools -> /opt/mc"
     scp -q "$REPO"/server/bin/* "$HOST:/opt/mc/"
-    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask} && chmod 644 /opt/mc/mcrcon.py"
+    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink} && chmod 644 /opt/mc/mcrcon.py"
 fi
 
 echo "==> bot code + prompt -> staging"

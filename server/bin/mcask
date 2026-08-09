@@ -15,6 +15,7 @@ Replies come back on stdout, not into Minecraft chat.
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, "/opt/mcbot")
@@ -79,6 +80,7 @@ from claude_agent_sdk import (
 )
 
 PROMPT_FILE = Path("/opt/mcbot/minecraft-computer.md")
+TRANSCRIPT = Path("/var/lib/mcbot/logs/comp.log")
 SESSION_FILE = Path("/var/lib/mcbot/session.id")
 ENV_FILE = Path("/etc/mcbot/env")
 MODEL = os.environ.get("MCBOT_MODEL", "opus")
@@ -144,6 +146,23 @@ async def run(question: str, fresh: bool, verbose: bool) -> int:
                         cmd = (block.input or {}).get("command", "")
                         print(f"  · {cmd[:160]}", file=sys.stderr, flush=True)
             elif isinstance(msg, ResultMessage):
+                # Log in the daemon's format so terminal questions appear in the cost
+                # log alongside in-game ones — otherwise spend is invisible here.
+                cost = getattr(msg, "total_cost_usd", None)
+                if isinstance(cost, (int, float)):
+                    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        with TRANSCRIPT.open("a") as f:
+                            f.write(f"[{stamp}] [wake] request — terminal\n")
+                            f.write(f"[{stamp}] [wake]     | terminal: {question[:150]}\n")
+                            f.write(f"[{stamp}] [wake] turn complete · ${cost:.4f}\n")
+                    except OSError:
+                        pass
+                    try:
+                        import memory
+                        memory.record_spend(memory.connect(), "terminal", MODEL, cost)
+                    except Exception:  # noqa: BLE001
+                        pass
                 if msg.is_error:
                     print(f"error: {msg.subtype}", file=sys.stderr)
                     return 1

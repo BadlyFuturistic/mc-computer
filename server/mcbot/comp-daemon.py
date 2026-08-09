@@ -18,6 +18,7 @@ to exactly one datapack directory.
     systemctl --user status mcbot      (or: systemctl status mcbot)
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -47,7 +48,20 @@ SERVER_LOG = Path(os.environ.get("MCBOT_SERVER_LOG", "/opt/mc/data/logs/latest.l
 LOG_DIR = Path(os.environ.get("MCBOT_LOG_DIR", "/var/lib/mcbot/logs"))
 ADMIN_ENV = "MCBOT_ADMIN"
 SESSION_FILE = Path(os.environ.get("MCBOT_SESSION_FILE", "/var/lib/mcbot/session.id"))
-MODEL = os.environ.get("MCBOT_MODEL", "opus")
+MODEL = os.environ.get("MCBOT_MODEL", "sonnet")   # escalate to opus per-task, see mcthink
+LIMITS_FILE = Path("/etc/mcbot/limits")            # root-owned; the bot cannot edit it
+
+# Rollover happens only during silence, never mid-conversation: a turn-count cap would
+# eventually cut someone off mid-project. Cost per turn grows with transcript length,
+# so a fresh session resets it — durable knowledge lives in memory.db, not the transcript.
+IDLE_ROLLOVER_MIN = 20        # quiet this long, start a fresh session
+BUSY_TURNS = 25               # after this many turns in one session...
+BUSY_IDLE_ROLLOVER_MIN = 5    # ...roll at the first shorter pause
+
+CRASH_DIR = Path("/opt/mc/data/crash-reports")
+REPORT_DIR = Path("/var/lib/mcbot/crash-reports")
+CRASH_COOLDOWN_MIN = 15       # never look at two crashes closer together than this
+CRASH_REPORTS_PER_DAY = 3     # after this, keep counting crashes but stop thinking
 # Anchored to the MinecraftServer logger. Without that, mod log lines match too —
 # "Mod proxy <unnamed> resolved as ..." looks exactly like chat to a naive pattern.
 _SRC = r"MinecraftServer/?\]:\s"
@@ -177,6 +191,7 @@ class Turn:
         self.spoke = False
         self.final = ""
         self.tools = 0
+        self.cost = 0.0
 
     def handle(self, msg) -> None:
         if isinstance(msg, SystemMessage):
@@ -225,13 +240,16 @@ class Turn:
         if isinstance(msg, ResultMessage):
             self.final = (msg.result or "").strip()
             cost = getattr(msg, "total_cost_usd", None)
+            if isinstance(cost, (int, float)):
+                self.cost = float(cost)
             if msg.is_error:
                 log(f"turn ended with error: {msg.subtype}", "error")
             elif isinstance(cost, (int, float)):
                 log(f"turn complete · ${cost:.4f}", "wake")
 
 
-async def run_turn(client: ClaudeSDKClient, prompt: str, why: str) -> None:
+async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
+                   db=None, source: str = "chat") -> None:
     """Send one request and consume the response to completion (or interruption)."""
     log(f"request — {why}", "wake")
     log_block("prompt:", prompt, "wake")
@@ -248,6 +266,10 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str) -> None:
         log_block("reply never reached chat — relaying it:", turn.final, "warn")
         say(turn.final)
         turn.spoke = True
+
+    if db is not None:
+        cost = getattr(turn, "cost", 0.0) or 0.0
+        memory.record_spend(db, source, MODEL, cost)
 
     if not turn.spoke:
         log("silent — not addressed", "wake")
@@ -295,6 +317,86 @@ def check_backup(db) -> None:
                              f"suspiciously small ({size // 1024**2} MB)")
     else:
         memory.record_backup(db, newest.name, size, True, "ok")
+
+
+def daily_limit() -> float:
+    """Spend ceiling, read fresh each time so raising it needs no restart. Lives in a
+    root-owned file: the bot can read it and cannot change it."""
+    try:
+        for line in LIMITS_FILE.read_text().splitlines():
+            if line.strip().startswith("DAILY_USD_LIMIT"):
+                return float(line.split("=", 1)[1].strip())
+    except (OSError, ValueError):
+        pass
+    return 50.0
+
+
+def crash_signature(text: str) -> str:
+    """Identify a crash by its exception and top frame, so a loop is recognisable."""
+    exc = re.search(r"^(?:Description|Exception).*?:\s*(.+)$", text, re.M)
+    frame = re.search(r"^\s*at ([\w.$]+)", text, re.M)
+    raw = f"{(exc.group(1) if exc else 'unknown')[:120]}|{frame.group(1) if frame else '?'}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def new_crash_reports() -> list[Path]:
+    try:
+        return sorted(CRASH_DIR.glob("crash-*.txt"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return []
+
+
+async def handle_crash(client, db, path: Path) -> bool:
+    """Write a report for a server crash, unless we have already seen this one.
+
+    Three layers of protection, because an unattended crash loop is where money
+    disappears: identical crashes only ever update a counter, reports are capped per
+    day, and a cooldown stops a fast loop firing even that many times.
+    """
+    try:
+        text = path.read_text(errors="replace")
+    except OSError as e:
+        log(f"crash file unreadable: {e}", "warn")
+        return False
+
+    sig = crash_signature(text)
+    is_new, seen = memory.crash_seen(db, sig)
+
+    if not is_new:
+        log(f"crash {sig} seen again (x{seen}) — counter updated, not investigating", "warn")
+        existing = db.execute("SELECT report FROM crashes WHERE signature = ?", (sig,)).fetchone()
+        if existing and existing["report"]:
+            try:
+                with open(existing["report"], "a") as f:
+                    f.write(f"\n- Recurred {time.strftime('%Y-%m-%dT%H:%M:%S%z')} "
+                            f"(occurrence {seen}) — {path.name}\n")
+            except OSError:
+                pass
+        return False
+
+    if memory.crashes_reported_today(db) >= CRASH_REPORTS_PER_DAY:
+        log(f"crash {sig} is new, but the daily report budget is spent — not investigating",
+            "warn")
+        return False
+
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H%M%S%z")
+    report = REPORT_DIR / f"{stamp}.md"
+
+    await run_turn(
+        client,
+        "The Minecraft server crashed. A crash report was written to "
+        f"{path}. Read it, work out what happened, and write your findings to "
+        f"{report} as markdown: what crashed, the most likely cause, which mod or "
+        "component is implicated, and whether it is likely to recur. Be concise and "
+        "concrete. Do not announce anything in chat — nobody may be online. If the "
+        "cause is obvious and harmless, say so in two lines rather than speculating.",
+        why=f"server crash ({path.name})",
+        db=db, source="crash",
+    )
+    memory.set_crash_report(db, sig, str(report))
+    memory.log_event(db, "crash", f"crash investigated, report at {report.name}")
+    return True
 
 
 def context_block(db, players: set[str], admin: str) -> str:
@@ -349,7 +451,7 @@ async def main() -> None:
         f"nobody else can authorise the disruptive actions listed in <authority>."
     )
 
-    options = ClaudeAgentOptions(
+    opts = dict(
         system_prompt=system_prompt,
         model=MODEL,
         allowed_tools=["Bash"],
@@ -362,21 +464,34 @@ async def main() -> None:
     asyncio.create_task(tail_chat(q))
     db = memory.connect()
     memory.rollup(db)
+    seen_crashes = {p.name for p in new_crash_reports()}   # ignore ones already on disk
 
-    async with ClaudeSDKClient(options=options) as client:
-        log(f"mcbot up · model {MODEL} · admin {ADMIN} · log {TRANSCRIPT}")
-        pending: list[str] = []
-        turn_task: asyncio.Task | None = None
-        interrupted = False
-        greet_at: dict[str, float] = {}      # player -> when their login delay expires
+    def make_client() -> ClaudeSDKClient:
+        return ClaudeSDKClient(options=ClaudeAgentOptions(**opts))
 
+    client = make_client()
+    await client.connect()
+    log(f"mcbot up · model {MODEL} · admin {ADMIN} · log {TRANSCRIPT}")
+
+    pending: list[str] = []
+    turn_task: asyncio.Task | None = None
+    interrupted = False
+    greet_at: dict[str, float] = {}
+    turns_this_session = 0
+    last_activity = time.time()
+    fresh_session = True
+
+    try:
         while True:
-            # Wake up for the soonest thing: a pending greeting, or the debounce.
-            timeouts = [t - time.time() for t in greet_at.values()]
-            timeout = min([t for t in timeouts if t is not None] + ([DEBOUNCE_SEC] if pending else []),
-                          default=None)
-            if timeout is not None:
-                timeout = max(0.1, timeout)
+            idle_needed = (BUSY_IDLE_ROLLOVER_MIN if turns_this_session >= BUSY_TURNS
+                           else IDLE_ROLLOVER_MIN) * 60
+            waits = [t - time.time() for t in greet_at.values()]
+            if pending:
+                waits.append(DEBOUNCE_SEC)
+            if turns_this_session:
+                waits.append(last_activity + idle_needed - time.time())
+            timeout = max(0.1, min(waits)) if waits else None
+
             try:
                 kind, payload = await asyncio.wait_for(q.get(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -391,16 +506,31 @@ async def main() -> None:
             if kind == "leave":
                 memory.log_event(db, "leave", "left the game", player=payload)
                 if payload in greet_at:
-                    # Dropped out before the delay elapsed — they never saw anything,
-                    # so whatever was held for them stays undelivered.
                     log(f"{payload} left before being greeted — messages stay pending")
                     del greet_at[payload]
                 continue
 
             if kind == "ready":
-                log("server finished starting — checking last backup")
+                log("server finished starting — checking backup and crash reports")
                 check_backup(db)
+                verdict = memory.backup_verdict(db) or "no change"
+                log(f"    | backup check: {verdict}", "wake")
+                log("turn complete · $0.0000", "wake")   # no model call; keeps the cost log complete
                 memory.rollup(db)
+                for report in new_crash_reports():
+                    if report.name in seen_crashes:
+                        continue
+                    seen_crashes.add(report.name)
+                    if time.time() - memory.last_crash_time(db) < CRASH_COOLDOWN_MIN * 60:
+                        log("within crash cooldown — not investigating", "warn")
+                        continue
+                    if memory.spent_today(db) >= daily_limit():
+                        log("daily spend limit reached — not investigating crash", "warn")
+                        continue
+                    if turn_task and not turn_task.done():
+                        await turn_task
+                    turn_task = asyncio.create_task(handle_crash(client, db, report))
+                    turns_this_session += 1
                 continue
 
             if kind == "chat":
@@ -415,10 +545,10 @@ async def main() -> None:
                     interrupted = True
                 continue
 
-            # --- timeout: either a login delay expired, or chat has settled ---
             if turn_task and not turn_task.done():
                 continue
 
+            # --- a quiet moment: greet, roll over, or send queued chat ---
             due = [p for p, t in greet_at.items() if t <= time.time()]
             if due:
                 still_here = online_players()
@@ -430,26 +560,53 @@ async def main() -> None:
                     block = context_block(db, {player}, ADMIN)
                     if not block:
                         continue
+                    last_activity = time.time()
+                    turns_this_session += 1
                     turn_task = asyncio.create_task(run_turn(
-                        client,
-                        f"{player} has just logged in and finished loading." + block,
-                        why=f"{player} login",
-                    ))
+                        client, f"{player} has just logged in and finished loading." + block,
+                        why=f"{player} login", db=db, source="login"))
                     break
                 continue
 
             if not pending:
+                # Nothing to do. If it has been quiet long enough, start a clean session
+                # so cost per turn stops climbing with transcript length.
+                if turns_this_session and time.time() - last_activity >= idle_needed:
+                    log(f"idle {idle_needed // 60:.0f}m after {turns_this_session} turns — "
+                        f"rolling to a fresh session")
+                    await client.disconnect()
+                    client = make_client()
+                    await client.connect()
+                    turns_this_session = 0
+                    fresh_session = True
                 continue
+
+            if memory.spent_today(db) >= daily_limit():
+                log(f"daily spend limit ${daily_limit():.2f} reached — ignoring chat", "warn")
+                pending.clear()
+                continue
+
             lines, pending = pending, []
             who = ", ".join(sorted({l.split(":", 1)[0] for l in lines}))
             for line in lines:
                 player, _, text = line.partition(":")
                 memory.log_event(db, "request", text.strip()[:200], player=player.strip())
+
             prompt = build_prompt(lines, interrupted) + context_block(db, online_players(), ADMIN)
+            if fresh_session:
+                # A new session has no transcript, so hand it the gist of recent history.
+                if recent := memory.recent_activity(db, since_hours=24, limit=6):
+                    prompt += "\n\nRecent history, for context:\n" + "\n".join(recent)
+                fresh_session = False
+
+            last_activity = time.time()
+            turns_this_session += 1
             turn_task = asyncio.create_task(
-                run_turn(client, prompt, why=f"chat from {who} ({len(lines)} line(s))")
-            )
+                run_turn(client, prompt, why=f"chat from {who} ({len(lines)} line(s))",
+                         db=db, source="chat"))
             interrupted = False
+    finally:
+        await client.disconnect()
 
 
 if __name__ == "__main__":

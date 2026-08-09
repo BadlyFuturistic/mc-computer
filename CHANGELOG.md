@@ -5,6 +5,24 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.3.0 — Minecraft 26.2 (NeoForge)
+
+- Default model is Sonnet, with `mcthink` to hand one hard sub-problem to a stronger
+  model. Escalation passes explicit context rather than forking the session, since the
+  transcript is what makes a turn expensive.
+- Sessions roll over during silence — after 20 minutes idle, or 5 minutes once a
+  session has run 25 turns. Per-turn cost grew linearly with transcript length before
+  this; a one-word reply had reached $1.55.
+- Daily spend limit in `/etc/mcbot/limits`, read fresh on every check, root-owned so
+  the bot cannot raise it.
+- Crash reports. A new file in `crash-reports/` triggers an investigation written to
+  `/var/lib/mcbot/crash-reports/<ISO8601>.md`. Loop protection is layered: identical
+  crashes only bump a counter, reports are capped per day, and a cooldown stops a fast
+  loop firing even that many times.
+- The server finishing startup now wakes the bot to verify the backup and check for
+  crash reports.
+- Terminal questions and backup checks appear in the cost log alongside chat turns.
+
 ## 0.2.0 — Minecraft 26.2 (NeoForge)
 
 - Runs on the Minecraft host as a hardened systemd service rather than over SSH from a

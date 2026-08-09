@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""mcthink — hand one hard sub-problem to a stronger model.
+
+  mcthink "the question"                        context on stdin
+  mcthink --context "background" "the question"
+
+The day-to-day assistant runs on a fast, cheap model. Some jobs genuinely need a
+stronger one — working out the bounds of a structure a player is describing loosely,
+untangling a crash report, planning a build from a vague brief. This runs exactly
+that sub-problem on the stronger model and prints the answer.
+
+It is deliberately NOT a fork of the live session. A fork drags the whole transcript
+along, which is most of what makes a turn expensive. Instead you pass the context that
+matters — and if a player has been refining a description over several messages, pass
+all of it, because judging what is relevant is part of the job you are delegating.
+
+Refuses to run once the day's spend limit is reached.
+"""
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mcbot")
+
+SERVICE_HOME = "/var/lib/mcbot"
+VENV = "/opt/mcbot/venv"
+if sys.prefix != VENV and os.access(f"{VENV}/bin/python", os.X_OK):
+    os.execv(f"{VENV}/bin/python", [f"{VENV}/bin/python", os.path.abspath(__file__), *sys.argv[1:]])
+
+import memory  # noqa: E402
+from claude_agent_sdk import (  # noqa: E402
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    TextBlock,
+)
+
+STRONG_MODEL = os.environ.get("MCBOT_STRONG_MODEL", "opus")
+LIMITS_FILE = Path("/etc/mcbot/limits")
+ENV_FILE = Path("/etc/mcbot/env")
+
+SYSTEM = """You are the reasoning half of a Minecraft server assistant. You have been
+handed one specific sub-problem because it needs more careful thought than the
+assistant's usual model gives.
+
+Answer the question directly and concretely. You are talking to another program, not to
+a player: no pleasantries, no restating the question, no offers of further help. If the
+context is genuinely insufficient to answer, say exactly what is missing.
+
+You have shell access on the Minecraft host and may use the tools in /opt/mc to check
+facts — mcwhere for named places, mccmd for RCON queries, mcbag for backpack contents.
+Prefer checking to guessing."""
+
+
+def daily_limit() -> float:
+    try:
+        for line in LIMITS_FILE.read_text().splitlines():
+            if line.strip().startswith("DAILY_USD_LIMIT"):
+                return float(line.split("=", 1)[1].strip())
+    except (OSError, ValueError):
+        pass
+    return 50.0
+
+
+def load_env() -> None:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
+                return
+    except OSError:
+        pass
+    sys.exit("no ANTHROPIC_API_KEY available")
+
+
+async def run(question: str, context: str) -> int:
+    db = memory.connect()
+    spent, limit = memory.spent_today(db), daily_limit()
+    if spent >= limit:
+        print(f"escalation refused: today's spend (${spent:.2f}) has reached the "
+              f"${limit:.2f} limit", file=sys.stderr)
+        return 2
+
+    prompt = question if not context else f"Context:\n\n{context}\n\nQuestion:\n\n{question}"
+    opts = ClaudeAgentOptions(
+        system_prompt=SYSTEM,
+        model=STRONG_MODEL,
+        allowed_tools=["Bash"],
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        cwd=SERVICE_HOME,
+    )
+    async with ClaudeSDKClient(options=opts) as client:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock) and b.text.strip():
+                        print(b.text.strip(), flush=True)
+            elif isinstance(msg, ResultMessage):
+                cost = getattr(msg, "total_cost_usd", None)
+                if isinstance(cost, (int, float)):
+                    memory.record_spend(db, "escalation", STRONG_MODEL, cost)
+                    print(f"  · escalation cost ${cost:.4f}", file=sys.stderr)
+    return 0
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    context = ""
+    if "--context" in args:
+        i = args.index("--context")
+        context = args[i + 1]
+        del args[i:i + 2]
+    question = " ".join(a for a in args if not a.startswith("--")).strip()
+    if not context and not sys.stdin.isatty():
+        context = sys.stdin.read().strip()
+    if not question:
+        sys.exit('usage: mcthink [--context "background"] "the question"')
+
+    load_env()
+    sys.exit(asyncio.run(run(question, context)))
+
+
+if __name__ == "__main__":
+    main()

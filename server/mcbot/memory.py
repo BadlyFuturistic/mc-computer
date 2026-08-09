@@ -46,6 +46,26 @@ CREATE TABLE IF NOT EXISTS daily (
     summary TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS spend (
+    id     INTEGER PRIMARY KEY,
+    ts     REAL NOT NULL,
+    day    TEXT NOT NULL,          -- YYYY-MM-DD, local
+    source TEXT NOT NULL,          -- chat | login | terminal | escalation | crash
+    model  TEXT,
+    usd    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spend_day ON spend(day);
+
+CREATE TABLE IF NOT EXISTS crashes (
+    id         INTEGER PRIMARY KEY,
+    ts         REAL NOT NULL,
+    signature  TEXT NOT NULL,      -- exception + top frame, to recognise a repeat
+    report     TEXT,               -- path to the written report, if one was written
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    last_ts    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crash_sig ON crashes(signature);
+
 CREATE TABLE IF NOT EXISTS backups (
     id          INTEGER PRIMARY KEY,
     ts          REAL NOT NULL,
@@ -100,6 +120,55 @@ def record_backup(db, filename: str | None, size: int | None, ok: bool, detail: 
         (time.time(), filename, size, 1 if ok else 0, detail),
     )
     db.commit()
+
+
+def record_spend(db, source: str, model: str | None, usd: float) -> None:
+    db.execute(
+        "INSERT INTO spend (ts, day, source, model, usd) VALUES (?,?,?,?,?)",
+        (time.time(), time.strftime("%Y-%m-%d"), source, model, float(usd or 0)),
+    )
+    db.commit()
+
+
+def spent_today(db) -> float:
+    row = db.execute(
+        "SELECT COALESCE(SUM(usd), 0) AS t FROM spend WHERE day = ?",
+        (time.strftime("%Y-%m-%d"),),
+    ).fetchone()
+    return float(row["t"])
+
+
+def crash_seen(db, signature: str) -> tuple[bool, int]:
+    """Register a crash. Returns (is_new_signature, how_many_times_seen)."""
+    row = db.execute("SELECT * FROM crashes WHERE signature = ?", (signature,)).fetchone()
+    now = time.time()
+    if row:
+        db.execute("UPDATE crashes SET seen_count = seen_count + 1, last_ts = ? WHERE id = ?",
+                   (now, row["id"]))
+        db.commit()
+        return False, row["seen_count"] + 1
+    db.execute("INSERT INTO crashes (ts, signature, seen_count, last_ts) VALUES (?,?,1,?)",
+               (now, signature, now))
+    db.commit()
+    return True, 1
+
+
+def crashes_reported_today(db) -> int:
+    row = db.execute(
+        "SELECT COUNT(*) AS n FROM crashes WHERE report IS NOT NULL "
+        "AND date(ts,'unixepoch','localtime') = date('now','localtime')"
+    ).fetchone()
+    return int(row["n"])
+
+
+def set_crash_report(db, signature: str, path: str) -> None:
+    db.execute("UPDATE crashes SET report = ? WHERE signature = ?", (path, signature))
+    db.commit()
+
+
+def last_crash_time(db) -> float:
+    row = db.execute("SELECT COALESCE(MAX(last_ts), 0) AS t FROM crashes").fetchone()
+    return float(row["t"])
 
 
 # ----------------------------------------------------------------- reading
@@ -193,4 +262,5 @@ def rollup(db) -> None:
                (time.time() - 14 * 86400,))
     db.execute("DELETE FROM backups WHERE reported_at IS NOT NULL AND reported_at < ?",
                (time.time() - 30 * 86400,))
+    db.execute("DELETE FROM spend WHERE ts < ?", (time.time() - 90 * 86400,))
     db.commit()

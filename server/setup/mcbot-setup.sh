@@ -72,6 +72,20 @@ chmod 640 /opt/mc/backups/*.tar.gz 2>/dev/null || true
 echo "==> the one directory the bot may write inside the world"
 install -d -o mcbot -g "$OWNER" -m 775 /opt/mc/data/world/datapacks/mcbuilds
 
+echo "==> spend limit (root-owned: readable by the bot, editable only by you)"
+if [[ ! -f "$ETC/limits" ]]; then
+  cat > "$ETC/limits" <<'EOF'
+# Maximum model spend per day, in USD. The bot reads this fresh on every check, so a
+# change takes effect immediately with no restart. It cannot write to this file.
+DAILY_USD_LIMIT=50
+EOF
+fi
+chown root:mcbot "$ETC/limits"
+chmod 640 "$ETC/limits"
+
+echo "==> crash report directory"
+install -d -o mcbot -g "$OWNER" -m 750 /var/lib/mcbot/crash-reports
+
 echo "==> read access to everything under /opt/mc/data and the backups"
 # Default ACLs so files the server rewrites (it recreates them mode 600) stay
 # readable without having to revisit this for every new mod.
