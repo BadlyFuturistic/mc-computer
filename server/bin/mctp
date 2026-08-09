@@ -48,9 +48,12 @@ def main():
             probes.append(
                 f"{ctx} execute if block {x} {cy} {z} minecraft:air"
                 f" if block {x} {cy + 1} {z} minecraft:air"
+                f" if block {x} {cy + 2} {z} minecraft:air"
                 f" unless block {x} {cy - 1} {z} minecraft:air"
                 f" unless block {x} {cy - 1} {z} minecraft:lava"
                 f" unless block {x} {cy - 1} {z} minecraft:water"
+                f" unless block {x} {cy - 1} {z} #minecraft:leaves"
+                f" unless block {x} {cy - 1} {z} #minecraft:fire"
                 f" run summon marker {x} {cy} {z} {{Tags:[\"tpprobe\"]}}"
             )
         rcon(*probes)
@@ -69,7 +72,11 @@ def main():
                 f"in {dim.split(':')[-1]} — nothing was moved"
             )
 
-        best = min(ys, key=lambda cy: abs(cy - y))
+        # Bias upward. A stored location's height is usually below the real surface, and
+        # picking the nearest candidate then lands in a cave under it. Prefer the lowest
+        # spot at or above what was asked for; only drop below if there is nothing above.
+        at_or_above = [cy for cy in ys if cy >= y]
+        best = min(at_or_above) if at_or_above else max(ys)
         res = rcon(f"{ctx} tp {player} {x + 0.5} {best} {z + 0.5}")
         joined = " ".join(res).lower()
         if "no entity" in joined or "no player" in joined or "not found" in joined:
