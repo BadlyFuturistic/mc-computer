@@ -246,7 +246,15 @@ class Turn:
             if msg.is_error:
                 log(f"turn ended with error: {msg.subtype}", "error")
             elif isinstance(cost, (int, float)):
-                log(f"turn complete · ${cost:.4f}", "wake")
+                spent = max(0.0, cost - SESSION_COST["seen"])
+                log(f"turn complete · ${spent:.4f}", "wake")
+
+
+# total_cost_usd on a ResultMessage is the SESSION's running total, not this turn's
+# cost. Recording it directly counts every turn once more for each turn that follows,
+# so what we log and bill against is the delta since the previous result in the same
+# session. Reset to 0.0 whenever a new session starts.
+SESSION_COST = {"seen": 0.0}
 
 
 async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
@@ -268,9 +276,12 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
         say(turn.final)
         turn.spoke = True
 
+    cumulative = getattr(turn, "cost", 0.0) or 0.0
+    this_turn = max(0.0, cumulative - SESSION_COST["seen"])
+    if cumulative:
+        SESSION_COST["seen"] = cumulative
     if db is not None:
-        cost = getattr(turn, "cost", 0.0) or 0.0
-        memory.record_spend(db, source, MODEL, cost)
+        memory.record_spend(db, source, MODEL, this_turn)
 
     if not turn.spoke:
         log("silent — not addressed", "wake")
@@ -585,6 +596,7 @@ async def main() -> None:
                     await client.connect()
                     turns_this_session = 0
                     fresh_session = True
+                    SESSION_COST["seen"] = 0.0
                 continue
 
             if memory.spent_today(db) >= daily_limit():
