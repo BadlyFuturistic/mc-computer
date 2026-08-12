@@ -82,6 +82,9 @@ EOF
 fi
 chown root:mcbot "$ETC/limits"
 chmod 640 "$ETC/limits"
+# Root-owned so the bot cannot raise its own ceiling. The admin may read it — they can
+# already edit it with sudo, so withholding it only breaks their tooling.
+setfacl -m "u:${ADMIN_USER}:r" "$ETC/limits" 2>/dev/null || true
 
 echo "==> crash report directory"
 install -d -o mcbot -g "$OWNER" -m 750 /var/lib/mcbot/crash-reports

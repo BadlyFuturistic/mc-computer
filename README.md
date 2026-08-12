@@ -127,6 +127,7 @@ installer applies:
     sudo chgrp -R "$(id -gn)" /opt/mcbot && sudo chmod -R g+rX /opt/mcbot   # reach the venv and prompt
     sudo setfacl -m "u:$(id -un):rx" /etc/mcbot                             # traverse the secrets dir
     sudo setfacl -m "u:$(id -un):r"  /etc/mcbot/env                         # read the API key
+    sudo setfacl -m "u:$(id -un):r"  /etc/mcbot/limits                      # read the spend limit
 
 Both ACLs are needed. Read on the file is unreachable without traverse on the
 directory, and the resulting error points at the file, not the directory.

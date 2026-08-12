@@ -96,8 +96,8 @@ def main() -> None:
         import memory
         db = memory.connect()
         spent = memory.spent_today(db)
-        # The limits file is root:mcbot, so an admin running this by hand cannot read
-        # it. That should degrade one line, not abort the whole memory section.
+        # The admin has an ACL granting read here; this fallback covers a host where
+        # that was not applied, and degrades one line rather than the whole section.
         limit, limit_note = 50.0, ""
         try:
             for line in LIMITS.read_text().splitlines():
