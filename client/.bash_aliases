@@ -89,5 +89,8 @@ mcask() {
     ssh "$MC_HOST" "/opt/mc/mcask$args"
 }
 
+# Is it running, healthy, and running the build you think it is?
+alias mchealth='ssh "$MC_HOST" /opt/mc/mchealth'
+
 # --- deployment -------------------------------------------------------------
 alias mcdeploy='~/mc-computer/client/deploy.sh'

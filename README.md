@@ -160,6 +160,7 @@ for things no data file records, such as which base is the important one.
 | `mcbackup` | live backup, no downtime, never deletes |
 | `mcmotd` | set the MOTD in `compose.yaml` |
 | `mcask` | ask from a terminal, in a forked session with full context |
+| `mchealth` | one-shot health check: service, version, RCON, world data, spend |
 
 Client-side, from `client/.bash_aliases`: `mccomplog` and `mccompall` for logs,
 `mccost` for what each turn costs (`mccost today` for a daily total), `mccompctl` for
@@ -203,6 +204,24 @@ datapack-loaded structures on 26.2. Verified, but worth re-checking on a new ver
 **Mod-specific paths.** `mcbag` reads Sophisticated Backpacks' store at
 `world/dimensions/minecraft/overworld/data/sophisticatedbackpacks/backpack_storage.dat`
 and resolves it by the item's `storage_uuid`. A mod update can move or restructure this.
+
+## Health checks
+
+    mchealth
+
+Reports service state, the build that is **running** versus the build installed, RCON
+reachability, whether world data is readable, spend against the limit, held messages,
+and how long since the last activity. Exits non-zero if anything needs attention, so it
+works as a check and not only as something to read.
+
+The version line is the one that needs machinery. Comparing files on disk tells you what
+was *deployed*; a deploy without a restart looks identical from the filesystem. So
+`deploy.sh` stamps `/opt/mcbot/BUILD` with the version, git commit and timestamp, and the
+daemon writes what it actually loaded to `/var/lib/mcbot/runtime.json` at startup. A
+mismatch between the two is reported as "deployed without a restart".
+
+A commit with uncommitted changes in the tree is stamped `-dirty`, so an ad-hoc deploy is
+visible later.
 
 ## Versioning
 

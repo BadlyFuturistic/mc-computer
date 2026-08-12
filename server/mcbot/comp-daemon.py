@@ -488,7 +488,23 @@ async def main() -> None:
 
     client = make_client()
     await client.connect()
-    log(f"mcbot up · model {MODEL} · admin {ADMIN} · log {TRANSCRIPT}")
+    # Record the build this process loaded. Files on disk tell you what was deployed;
+    # only the process can say what it is actually running.
+    build = {}
+    try:
+        build = json.loads(Path("/opt/mcbot/BUILD").read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        (LOG_DIR.parent / "runtime.json").write_text(json.dumps({
+            **build, "pid": os.getpid(), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "model": MODEL, "effort": EFFORT,
+        }))
+    except OSError as e:
+        log(f"could not record runtime build: {e}", "warn")
+
+    log(f"mcbot up · {build.get('version', '?')} ({build.get('commit', '?')}) · "
+        f"model {MODEL} · effort {EFFORT} · admin {ADMIN}")
 
     pending: list[str] = []
     turn_task: asyncio.Task | None = None

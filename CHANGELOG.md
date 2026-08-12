@@ -5,6 +5,16 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.3.1 — Minecraft 26.2 (NeoForge)
+
+- `mchealth`: service state, running-versus-installed build, RCON, world data
+  readability, spend, held messages, last activity. Non-zero exit on any problem.
+- Builds are stamped at deploy and recorded by the daemon at startup, so "is it running
+  the version I think it is" has an answer that a file listing cannot give.
+- Per-turn cost is recorded as the delta from the session's running total, rather than
+  the running total itself. The previous behaviour counted every turn once more for each
+  turn that followed and tripped the spend limit at roughly 2.7x actual spend.
+
 ## 0.3.0 — Minecraft 26.2 (NeoForge)
 
 - Default model is Sonnet, with `mcthink` to hand one hard sub-problem to a stronger

@@ -32,8 +32,17 @@ ssh "$HOST" "mkdir -p $STAGE"
 if [[ "$PROMPT_ONLY" == false ]]; then
     echo "==> server tools -> /opt/mc"
     scp -q "$REPO"/server/bin/* "$HOST:/opt/mc/"
-    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink} && chmod 644 /opt/mc/mcrcon.py"
+    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink,mchealth} && chmod 644 /opt/mc/mcrcon.py"
 fi
+
+echo "==> stamping build"
+# Version plus commit, so "what is running" has an unambiguous answer later.
+BUILD_JSON=$(printf '{"version":"%s","commit":"%s","deployed":"%s"}' \
+    "$(cat "$REPO/VERSION" 2>/dev/null | tr -d '\n')" \
+    "$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null)$(cd "$REPO" && git diff --quiet 2>/dev/null || echo '-dirty')" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+echo "$BUILD_JSON" | ssh "$HOST" "cat > $STAGE/BUILD"
+echo "    $BUILD_JSON"
 
 echo "==> bot code + prompt -> staging"
 scp -q "$REPO/server/mcbot/comp-daemon.py"        "$HOST:$STAGE/comp-daemon.py"
@@ -53,6 +62,7 @@ fi
 # there and restarting both need sudo.
 echo "==> installing bot files (sudo)"
 ssh -t "$HOST" "
+    sudo install -o root -g root -m 644 $STAGE/BUILD                 /opt/mcbot/BUILD &&
     sudo install -o root -g root -m 755 $STAGE/comp-daemon.py        /opt/mcbot/comp-daemon.py &&
     sudo install -o root -g root -m 644 $STAGE/memory.py             /opt/mcbot/memory.py &&
     sudo install -o root -g root -m 644 $STAGE/minecraft-computer.md /opt/mcbot/minecraft-computer.md &&
