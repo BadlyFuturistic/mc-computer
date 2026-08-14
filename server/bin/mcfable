@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""mcfable — run one request on Fable, with the admin's approval.
+
+  mcfable request <player> "<what they asked for>"
+  mcfable run "<the request>"
+  mcfable status
+
+Fable is only ever used because a player explicitly asked for it, and only after
+the admin approves. Both halves are enforced outside the model: `request` records
+who asked, and approval is granted by the daemon when it sees the admin agree in
+raw chat. Nothing this program does can approve its own request.
+
+Approvals are single-use and expire after 30 minutes, so an old yes cannot be
+spent on a later request.
+"""
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mcbot")
+
+SERVICE_HOME = "/var/lib/mcbot"
+VENV = "/opt/mcbot/venv"
+if sys.prefix != VENV and os.access(f"{VENV}/bin/python", os.X_OK):
+    os.execv(f"{VENV}/bin/python", [f"{VENV}/bin/python", os.path.abspath(__file__), *sys.argv[1:]])
+
+import memory  # noqa: E402
+from claude_agent_sdk import (  # noqa: E402
+    AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock,
+)
+
+FABLE_MODEL = os.environ.get("MCBOT_FABLE_MODEL", "claude-fable-5")
+ENV_FILE = Path("/etc/mcbot/env")
+LIMITS = Path("/etc/mcbot/limits")
+MAX_CALL_USD = float(os.environ.get("MCBOT_MAX_CALL_USD", "1.00"))
+
+SYSTEM = """You are answering one request for a Minecraft server assistant, on a model
+chosen specifically for this task because a player asked for it by name.
+
+Answer the request directly. You are talking to another program, not a player: no
+pleasantries, no restating the question. If you need facts about the world, the tools in
+/opt/mc can get them — mcwhere for named places, mccmd for RCON queries."""
+
+
+def daily_limit() -> float:
+    try:
+        for line in LIMITS.read_text().splitlines():
+            if line.strip().startswith("DAILY_USD_LIMIT"):
+                return float(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        pass
+    return 50.0
+
+
+def load_env() -> None:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
+                return
+    except OSError:
+        pass
+    sys.exit("no ANTHROPIC_API_KEY available")
+
+
+async def run_fable(request: str) -> int:
+    db = memory.connect()
+    if memory.spent_today(db) >= daily_limit():
+        sys.exit("refused: today's spend limit has been reached")
+
+    approval = memory.claim_fable(db)
+    if not approval:
+        sys.exit("refused: no approved request. The admin must approve first — "
+                 "run 'mcfable request <player> \"<what>\"' and ask them in chat.")
+
+    load_env()
+    opts = ClaudeAgentOptions(
+        system_prompt=SYSTEM, model=FABLE_MODEL, allowed_tools=["Bash"],
+        permission_mode="bypassPermissions", setting_sources=[],
+        cwd=SERVICE_HOME, max_budget_usd=MAX_CALL_USD,
+    )
+    async with ClaudeSDKClient(options=opts) as client:
+        await client.query(request)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock) and b.text.strip():
+                        print(b.text.strip(), flush=True)
+            elif isinstance(msg, ResultMessage):
+                cost = getattr(msg, "total_cost_usd", None)
+                if isinstance(cost, (int, float)):
+                    memory.record_spend(db, "fable", FABLE_MODEL, cost)
+                    print(f"  · fable cost ${cost:.4f}", file=sys.stderr)
+    memory.log_event(db, "request",
+                     f"fable used for {approval['player']}: {approval['what'][:120]}",
+                     player=approval["player"])
+    return 0
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+    cmd, rest = args[0], args[1:]
+    db = memory.connect()
+
+    if cmd == "request":
+        if len(rest) < 2:
+            sys.exit('usage: mcfable request <player> "<what they asked for>"')
+        rid = memory.request_fable(db, rest[0], " ".join(rest[1:]))
+        print(f"request {rid} recorded for {rest[0]} — awaiting admin approval in chat")
+
+    elif cmd == "status":
+        pend = memory.pending_fable(db)
+        if pend:
+            print(f"awaiting approval: #{pend['id']} for {pend['player']} — {pend['what']}")
+        else:
+            print("nothing awaiting approval")
+
+    elif cmd == "run":
+        if not rest:
+            sys.exit('usage: mcfable run "<the request>"')
+        sys.exit(asyncio.run(run_fable(" ".join(rest))))
+
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

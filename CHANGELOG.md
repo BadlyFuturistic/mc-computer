@@ -5,6 +5,19 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.4.0 — Minecraft 26.2 (NeoForge)
+
+- `mcfill` for bulk region edits. Minecraft caps /fill at 32768 blocks, so large
+  requests were dozens of hand-sliced commands; this slices, force-loads each slice,
+  runs the fills over one connection and releases the chunks. `--replace` accepts block
+  tags, so "every tree" is `#minecraft:logs` rather than a guess at species.
+- `mcignite` finds a real TNT block near the point given before priming it. Aiming at a
+  coordinate directly fails often, because a converted hillside keeps the cave voids
+  that were already in it and the centre is frequently air.
+- Fable, on explicit player request only, gated on admin approval. The approval is
+  granted by the daemon on seeing the admin agree in raw chat, so the model has no route
+  to approving its own request. Single use, expires after 30 minutes.
+
 ## 0.3.1 — Minecraft 26.2 (NeoForge)
 
 - `mchealth`: service state, running-versus-installed build, RCON, world data

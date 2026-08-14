@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""mcfill — change a large region of the world in one command.
+
+  mcfill <x1> <y1> <z1> <x2> <y2> <z2> <block> [--replace <filter>] [options]
+
+  mcfill 100 60 100 200 90 200 minecraft:glass --replace #minecraft:logs
+  mcfill 100 60 100 200 90 200 minecraft:glass --replace #minecraft:leaves
+  mcfill -50 40 -50 50 120 50 minecraft:tnt --replace #minecraft:base_stone_overworld
+
+  --replace <filter>   only change blocks matching this block or #tag
+  --dimension <dim>    default minecraft:overworld
+  --force              proceed past the size warning
+  --dry-run            report what would run, change nothing
+
+Minecraft caps /fill at 32768 blocks, so a real request — a forest, a hillside — is
+dozens of commands with the slicing worked out by hand. Getting that arithmetic wrong
+leaves gaps or overlaps, and doing it a command at a time is slow and expensive.
+
+This slices the region, force-loads each slice, runs its fills over one RCON
+connection, and releases the chunks again. Block tags do the selection work:
+#minecraft:logs and #minecraft:leaves are every tree, whatever species.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon, RconError
+
+MAX_BLOCKS_PER_FILL = 32768      # hard server limit
+MAX_CHUNKS_LOADED = 200          # forceload caps around 256; stay clear of it
+WARN_VOLUME = 4_000_000          # above this, require --force
+
+
+def slices(x1, y1, z1, x2, y2, z2):
+    """Split the box into pieces small enough for one /fill each."""
+    x1, x2 = sorted((x1, x2)); y1, y2 = sorted((y1, y2)); z1, z2 = sorted((z1, z2))
+    # Pick a footprint that keeps each slice's chunk count loadable, then choose the
+    # slab height that fills the block budget.
+    step = 48
+    for sx in range(x1, x2 + 1, step):
+        for sz in range(z1, z2 + 1, step):
+            ex, ez = min(sx + step - 1, x2), min(sz + step - 1, z2)
+            area = (ex - sx + 1) * (ez - sz + 1)
+            dy = max(1, MAX_BLOCKS_PER_FILL // area)
+            for sy in range(y1, y2 + 1, dy):
+                ey = min(sy + dy - 1, y2)
+                yield sx, sy, sz, ex, ey, ez
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    opts = {"replace": None, "dimension": "minecraft:overworld"}
+    force = "--force" in args
+    dry = "--dry-run" in args
+    for key in ("replace", "dimension"):
+        flag = f"--{key}"
+        if flag in args:
+            i = args.index(flag)
+            opts[key] = args[i + 1]
+            del args[i:i + 2]
+    args = [a for a in args if not a.startswith("--")]
+    if len(args) != 7:
+        sys.exit(__doc__)
+
+    *coords, block = args
+    try:
+        x1, y1, z1, x2, y2, z2 = (int(c) for c in coords)
+    except ValueError:
+        sys.exit("coordinates must be integers")
+
+    volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
+    pieces = list(slices(x1, y1, z1, x2, y2, z2))
+    print(f"{volume:,} blocks in {len(pieces)} fill(s)"
+          f"{' matching ' + opts['replace'] if opts['replace'] else ''}")
+
+    if volume > WARN_VOLUME and not force:
+        sys.exit(f"refusing: {volume:,} blocks is very large and will lag the server. "
+                 f"Narrow the region, or pass --force if this is intended.")
+    if dry:
+        for p in pieces[:5]:
+            print(f"  would fill {p[0]} {p[1]} {p[2]} -> {p[3]} {p[4]} {p[5]}")
+        if len(pieces) > 5:
+            print(f"  ... and {len(pieces) - 5} more")
+        return
+
+    ctx = f"execute in {opts['dimension']} run "
+    suffix = f" replace {opts['replace']}" if opts["replace"] else ""
+    changed, failed = 0, 0
+
+    try:
+        with Rcon() as r:
+            for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
+                # Load only this slice's chunks, then release them, so a big region
+                # never exceeds the forceload cap.
+                r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
+                out = r.command(f"{ctx}fill {sx} {sy} {sz} {ex} {ey} {ez} {block}{suffix}")
+                r.command(f"{ctx}forceload remove {sx} {sz} {ex} {ez}")
+                if "Successfully filled" in out:
+                    changed += int("".join(c for c in out.split("filled")[1] if c.isdigit()) or 0)
+                elif "No blocks were filled" not in out and out:
+                    failed += 1
+                    if failed <= 3:
+                        print(f"  slice {i}: {out[:120]}", file=sys.stderr)
+                if i % 20 == 0:
+                    print(f"  {i}/{len(pieces)} slices, {changed:,} blocks so far", flush=True)
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+    print(f"changed {changed:,} block(s)" + (f", {failed} slice(s) failed" if failed else ""))
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

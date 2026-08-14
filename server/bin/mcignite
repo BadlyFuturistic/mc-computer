@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""mcignite — set off TNT, finding a real TNT block first.
+
+  mcignite <x> <y> <z> [--radius N] [--dimension <dim>] [--fuse ticks]
+
+Igniting a pile of TNT by coordinate goes wrong in a specific way: the point you
+aim at is often not TNT at all. A hillside converted to TNT is full of the cave
+voids that were already inside it, so "the middle" is frequently air, and setting
+fire to air does nothing while looking like it worked.
+
+This searches outward from the point for an actual TNT block, then summons primed
+TNT at that spot — which detonates and chain-ignites its neighbours. If it cannot
+find TNT within the radius it says so and changes nothing, rather than reporting a
+success that produced no explosion.
+"""
+import re
+import sys
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon, RconError
+
+TAG = "ignprobe"
+
+
+def shell(radius: int):
+    """Coordinates ordered by distance from the centre, nearest first."""
+    seen = set()
+    for r in range(radius + 1):
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                for dz in range(-r, r + 1):
+                    if max(abs(dx), abs(dy), abs(dz)) != r:
+                        continue
+                    if (dx, dy, dz) in seen:
+                        continue
+                    seen.add((dx, dy, dz))
+                    yield dx, dy, dz
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    radius, dim, fuse = 6, "minecraft:overworld", 40
+    for key, cast in (("--radius", int), ("--dimension", str), ("--fuse", int)):
+        if key in args:
+            i = args.index(key)
+            val = cast(args[i + 1])
+            radius, dim, fuse = (
+                val if key == "--radius" else radius,
+                val if key == "--dimension" else dim,
+                val if key == "--fuse" else fuse,
+            )
+            del args[i:i + 2]
+    coords = [a for a in args if not a.startswith("--")]
+    if len(coords) != 3:
+        sys.exit(__doc__)
+    try:
+        cx, cy, cz = (int(c) for c in coords)
+    except ValueError:
+        sys.exit("coordinates must be integers")
+
+    ctx = f"execute in {dim} run "
+    try:
+        with Rcon() as r:
+            r.command(f"{ctx}forceload add {cx - radius} {cz - radius} {cx + radius} {cz + radius}")
+            try:
+                # Probe outward, marking every real TNT block found.
+                probes = []
+                for dx, dy, dz in shell(radius):
+                    x, y, z = cx + dx, cy + dy, cz + dz
+                    if not (-64 < y < 320):
+                        continue
+                    probes.append(
+                        f"{ctx}execute if block {x} {y} {z} minecraft:tnt "
+                        f'run summon marker {x} {y} {z} {{Tags:["{TAG}"]}}'
+                    )
+                for p in probes:
+                    r.command(p)
+
+                found = r.command(f"{ctx}execute as @e[tag={TAG}] run data get entity @s Pos")
+                spots = []
+                for line in found.splitlines():
+                    m = re.search(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]", line)
+                    if m:
+                        spots.append(tuple(int(float(v)) for v in m.groups()))
+                r.command(f"{ctx}kill @e[tag={TAG}]")
+
+                if not spots:
+                    print(f"no TNT within {radius} blocks of {cx} {cy} {cz} — nothing ignited",
+                          file=sys.stderr)
+                    sys.exit(1)
+
+                # Nearest to the point asked for.
+                x, y, z = min(spots, key=lambda p: (p[0]-cx)**2 + (p[1]-cy)**2 + (p[2]-cz)**2)
+                r.command(f"{ctx}setblock {x} {y} {z} minecraft:air")
+                out = r.command(
+                    f"{ctx}summon minecraft:tnt {x}.5 {y} {z}.5 {{fuse:{fuse}s}}")
+                offset = "" if (x, y, z) == (cx, cy, cz) else f" (nearest TNT to {cx} {cy} {cz})"
+                print(f"primed TNT at {x} {y} {z}{offset}, fuse {fuse} ticks — {out or 'ok'}")
+            finally:
+                r.command(f"{ctx}forceload remove {cx - radius} {cz - radius} "
+                          f"{cx + radius} {cz + radius}")
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

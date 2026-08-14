@@ -162,6 +162,10 @@ for things no data file records, such as which base is the important one.
 | `mcmotd` | set the MOTD in `compose.yaml` |
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
+| `mcfill` | bulk region edits, sliced past the 32768-block fill limit |
+| `mcignite` | prime TNT, finding a real TNT block near the point given |
+| `mcthink` | escalate one hard sub-problem to a stronger model |
+| `mcfable` | run a request on Fable, gated on admin approval |
 
 Client-side, from `client/.bash_aliases`: `mccomplog` and `mccompall` for logs,
 `mccost` for what each turn costs (`mccost today` for a daily total), `mccompctl` for

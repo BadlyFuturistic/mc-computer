@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS crashes (
 );
 CREATE INDEX IF NOT EXISTS idx_crash_sig ON crashes(signature);
 
+CREATE TABLE IF NOT EXISTS fable_requests (
+    id          INTEGER PRIMARY KEY,
+    ts          REAL NOT NULL,
+    player      TEXT NOT NULL,      -- who asked for it
+    what        TEXT NOT NULL,
+    approved_at REAL,               -- set by the daemon on seeing the admin approve
+    used_at     REAL                -- consumed by one run; approvals are single-use
+);
+
 CREATE TABLE IF NOT EXISTS backups (
     id          INTEGER PRIMARY KEY,
     ts          REAL NOT NULL,
@@ -169,6 +178,41 @@ def set_crash_report(db, signature: str, path: str) -> None:
 def last_crash_time(db) -> float:
     row = db.execute("SELECT COALESCE(MAX(last_ts), 0) AS t FROM crashes").fetchone()
     return float(row["t"])
+
+
+def request_fable(db, player: str, what: str) -> int:
+    cur = db.execute("INSERT INTO fable_requests (ts, player, what) VALUES (?,?,?)",
+                     (time.time(), player, what[:300]))
+    db.commit()
+    return cur.lastrowid
+
+
+def pending_fable(db):
+    """The newest request still waiting on approval, if any."""
+    return db.execute(
+        "SELECT * FROM fable_requests WHERE approved_at IS NULL AND used_at IS NULL "
+        "AND ts > ? ORDER BY ts DESC LIMIT 1", (time.time() - 1800,)).fetchone()
+
+
+def approve_fable(db, req_id: int) -> None:
+    """Only the daemon calls this, on seeing the admin approve in raw chat. The model
+    has no route to it, which is what makes the approval meaningful."""
+    db.execute("UPDATE fable_requests SET approved_at = ? WHERE id = ?",
+               (time.time(), req_id))
+    db.commit()
+
+
+def claim_fable(db):
+    """Take an approved, unused approval. Single use, and expires after 30 minutes."""
+    row = db.execute(
+        "SELECT * FROM fable_requests WHERE approved_at IS NOT NULL AND used_at IS NULL "
+        "AND approved_at > ? ORDER BY approved_at DESC LIMIT 1",
+        (time.time() - 1800,)).fetchone()
+    if row:
+        db.execute("UPDATE fable_requests SET used_at = ? WHERE id = ?",
+                   (time.time(), row["id"]))
+        db.commit()
+    return row
 
 
 # ----------------------------------------------------------------- reading

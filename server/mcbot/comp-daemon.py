@@ -73,6 +73,10 @@ READY = re.compile(_SRC + r"Done \([\d.]+s\)!")
 # A player who joins is often still loading chunks; talking immediately means talking
 # to a black screen. And if they drop straight back out, they never saw it.
 LOGIN_DELAY_SEC = 25
+# Approval for a Fable request. Matched against the admin's raw chat by the daemon,
+# so the model cannot grant itself permission by claiming it was given.
+APPROVE_FABLE = re.compile(r"\b(approve|approved|yes|go ahead|allow)\b.*\bfable\b"
+                           r"|\bfable\b.*\b(approved?|ok|okay|yes|go ahead|allowed)\b", re.I)
 DEBOUNCE_SEC = 4                    # group a burst of chat into one request
 RECONNECT_SEC = 10                  # wait before re-establishing a dropped log tail
 RESULT_PREVIEW = 600                # chars of tool output kept in the readable log
@@ -567,6 +571,13 @@ async def main() -> None:
                 continue
 
             if kind == "chat":
+                speaker, _, text = payload.partition(":")
+                if speaker.strip().lower() == ADMIN.lower():
+                    req = memory.pending_fable(db)
+                    if req and APPROVE_FABLE.search(text):
+                        memory.approve_fable(db, req["id"])
+                        log(f"admin approved fable request #{req['id']} "
+                            f"for {req['player']}", "wake")
                 pending.append(payload)
                 if turn_task and not turn_task.done():
                     log("new chat — interrupting current task", "wake")
