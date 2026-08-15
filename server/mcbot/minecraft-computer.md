@@ -432,8 +432,13 @@ yourself.
   /opt/mc/mcbore --player <name> --width 5 --height 3 \
       --line minecraft:stone_bricks --light minecraft:glowstone --every 3
 
-It starts where the player stands, bores the way they are looking, and finds both ends of
-the mass by itself — then clears, lines and lights it in one pass. `--dry-run` reports what
+It takes the player's position only as a hint about where they mean, then finds the road
+itself and works from that: the surface underfoot gives the centre line and the direction it
+runs, and the player's gaze only chooses which end. A player is never stood exactly in the
+middle of a lane and keeps moving after asking, so anything built from their coordinates
+comes out a block off the road or somewhere else entirely. It refuses rather than guessing
+if there is no road there. Both ends of the mass it finds by itself — then clears, lines and
+lights it in one pass. `--dry-run` reports what
 it found without changing anything.
 
 Do this rather than surveying and working out the range. Judging a mass by eye from a list

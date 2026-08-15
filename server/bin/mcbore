@@ -15,6 +15,7 @@
   --line <block>     line the walls and ceiling with this
   --support <block>  cap the ceiling only, when sand or gravel sits above
   --repave           put the floor markings back afterwards (see mcrepave)
+  --no-align         centre on the player, not on the road underfoot
   --floor-too        line the floor as well (off by default; roads have their own)
   --light <block>    put lights in the ceiling
   --every <n>        light spacing along the tunnel    (default 5)
@@ -76,7 +77,8 @@ def player_state(name: str):
     if not pos or not rot:
         sys.exit(f"could not read {name}'s position — are they online?")
     x, y, z = (float(v) for v in pos.groups())
-    return x, y, z, facing_from_yaw(float(rot.group(1)))
+    yaw = float(rot.group(1))
+    return x, y, z, facing_from_yaw(yaw), yaw
 
 
 def cells(step_x, step_z, half, height, floor_y, along_x, from_row=0):
@@ -187,6 +189,67 @@ def lining_cells(inside, along_x: bool, floor_too: bool):
     return cells
 
 
+def run_length(reader, x, y, z, axis, want, limit=24):
+    """How far the same surface continues either way along one axis."""
+    lo = hi = 0
+    step = (1, 0) if axis == "x" else (0, 1)
+    while lo > -limit and reader.block(x + step[0] * (lo - 1), y,
+                                       z + step[1] * (lo - 1)) == want:
+        lo -= 1
+    while hi < limit and reader.block(x + step[0] * (hi + 1), y,
+                                      z + step[1] * (hi + 1)) == want:
+        hi += 1
+    return lo, hi
+
+
+def find_road(reader, seed, floor_y, width):
+    """Find the carriageway near a point, and take the geometry from the road.
+
+    A player's position is a hint about where they mean, not a specification. They
+    are never stood exactly in the middle of a lane, and they keep walking after they
+    ask — by the time the command runs they may be somewhere else entirely. Anything
+    built from their coordinates inherits both errors: a tunnel a block off the road,
+    or in the wrong place altogether.
+
+    The road does not move. Its surface is a run of one block a few wide and much
+    longer than it is wide, which gives the centre line and the direction it travels
+    without asking anybody. Returns (x, z, axis) or None if there is no road here.
+    """
+    sx, sz = seed
+    for dx, dz in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0),
+                   (0, 2), (0, -2)):
+        x, z = sx + dx, sz + dz
+        surface = reader.block(x, floor_y - 1, z)
+        if not surface or region.passable(surface):
+            continue
+        xlo, xhi = run_length(reader, x, floor_y - 1, z, "x", surface)
+        zlo, zhi = run_length(reader, x, floor_y - 1, z, "z", surface)
+        along_x_len, along_z_len = xhi - xlo + 1, zhi - zlo + 1
+        if along_x_len == along_z_len:
+            continue                       # square patch says nothing about direction
+        axis = "x" if along_x_len > along_z_len else "z"
+        across = along_z_len if axis == "x" else along_x_len
+        if not (width <= across <= width + 6):
+            continue                       # not a corridor the size of this tunnel
+        if axis == "x":
+            return x, z + (zlo + zhi) // 2, "x"
+        return x + (xlo + xhi) // 2, z, "z"
+    return None
+
+
+def facing_along(axis: str, yaw: float) -> str:
+    """Which way along a road a player is heading, from where they are looking.
+
+    The road decides the axis; the player only chooses which end. Taking the axis
+    from their gaze instead lets a glance sideways send a tunnel across the road.
+    """
+    radians = math.radians(yaw)
+    look_x, look_z = -math.sin(radians), math.cos(radians)
+    if axis == "x":
+        return "+x" if look_x >= 0 else "-x"
+    return "+z" if look_z >= 0 else "-z"
+
+
 def box_for(start, facing, first, last, half, height, floor_y, out=0):
     """The world-space box of the tunnel, optionally grown by `out` on every side."""
     dx, dz = FACINGS[facing]
@@ -221,6 +284,7 @@ def main() -> None:
     line = take("--line")
     support = take("--support")
     repave = "--repave" in args
+    no_align = "--no-align" in args
     light = take("--light")
     every = take("--every", int, 5)
     limit = take("--max", int, 160)
@@ -234,7 +298,7 @@ def main() -> None:
     half = (width - 1) // 2
 
     if player:
-        px, py, pz, looking = player_state(player)
+        px, py, pz, looking, yaw = player_state(player)
         facing = facing or looking
         # Feet sit on top of the block below; the tunnel floor is the block they
         # would walk on. Road surfaces are not always whole blocks, hence the ceil.
@@ -242,6 +306,7 @@ def main() -> None:
         if floor_y is None:
             floor_y = math.ceil(py)
     else:
+        yaw = None
         if len(coords) != 3 or not facing:
             sys.exit(__doc__)
         try:
@@ -257,6 +322,20 @@ def main() -> None:
     try:
         reader = region.Reader(dimension)
         reader.flush()
+
+        if player and not no_align:
+            found = find_road(reader, start, floor_y, width)
+            if not found:
+                sys.exit(
+                    f"no road or corridor found near {start[0]} {floor_y} {start[1]}. "
+                    f"A player's position only says roughly where they mean, so this "
+                    f"will not bore from it blindly — give explicit coordinates and "
+                    f"--facing, or stand on the road.")
+            rx, rz, axis = found
+            was, start, facing = start, (rx, rz), facing_along(axis, yaw)
+            if (rx, rz) != was:
+                print(f"road found: centred at {rx} {floor_y} {rz}, running along "
+                      f"{axis} (you were at {was[0]} {was[1]})")
 
         first, last = find_mass(reader, start, facing, half, height, floor_y, limit)
         if first is None:

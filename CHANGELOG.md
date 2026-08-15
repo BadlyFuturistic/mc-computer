@@ -5,6 +5,21 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.15.0 — Minecraft 26.2 (NeoForge)
+
+**A tunnel was bored a block north of the road, because it was centred on the player rather
+than the road.** Nobody stands exactly in the middle of a lane, so one wall ended up in the
+carriageway and the markings ran against it. Worse, a player keeps moving after asking: a
+dry run seconds later put the same tunnel five blocks away, across open ground.
+
+- `mcbore` now treats the player's position as a hint about *where they mean* and finds the
+  road from it. The surface underfoot is a run a few blocks wide and much longer than it is
+  wide, which gives both the centre line and the direction it travels.
+- The player's gaze only chooses which end of the road to head for; the axis comes from the
+  road, so a glance sideways can no longer send a tunnel across it.
+- It refuses if there is no road or corridor near them, instead of boring at their feet.
+- Verified across the full road width: seeds at z=239 through 243 all resolve to centre 241.
+
 ## 0.14.0 — Minecraft 26.2 (NeoForge)
 
 **Road markings kept coming back wrong, three separate ways, because their facing was being
