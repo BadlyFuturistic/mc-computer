@@ -5,6 +5,38 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.7.0 — Minecraft 26.2 (NeoForge)
+
+Block reads now come from the world files instead of RCON. RCON has no command that
+answers "what block is here?" — only `execute if block <id>`, which tests a guess and
+replies yes or no, so a wrong id and empty ground are indistinguishable. Measured on the
+live server, 100 blocks in cold chunks: **5.55s over RCON** (2.4s of that force-loading)
+against **0.03s from the files** — and the file read returns the actual id.
+
+- New `region.py`: region-file reader with a chunk cache. Handles both world layouts
+  (`dimensions/<ns>/<path>/` and the older `DIM-1`/`DIM1`), oversized `.mcc` chunks, and
+  distinguishes an ungenerated chunk from air.
+- New `mcblock`: point lookup, `survey` for what a region is made of, `find` for where a
+  block is. Surveying 35,301 blocks takes 0.06s.
+- `mctrace` walks the run from the files. No force-loading, no settle delay, no round trip
+  per block: a 78-block pipe run fell from ~10s to **0.01s**. It also reports what the run
+  is made of, and a failed start now says what it found instead of only what it wanted.
+  `--block 'pipez:*'` matches a family by prefix. Default `--max` raised to 100,000.
+- `mcfill` gains a pre-flight check. `validate()` already caught an id the game has never
+  heard of; this catches the other half — an id that is real but absent from the box, which
+  otherwise runs every fill successfully and changes nothing. It reports what is actually
+  there instead. Both checks now run under `--dry-run`, which is when they are wanted.
+- Reads see the last save, so these tools run `save-all flush` first — 0.3s, once.
+- `Reader.verify()` cross-checks one block against RCON before a batch is trusted, because
+  the chunk format changes between Minecraft versions and a stale parser returns plausible
+  wrong blocks rather than failing.
+- `deploy.sh` built its `chmod` list from hand-maintained names, and `mctrace` was missing
+  from it — it had been deploying non-executable. One derived list now drives both the copy
+  and the modes, and it skips directories: a `__pycache__` left by running the tools
+  locally is a directory, and `scp` aborts the entire transfer on one.
+- The `mcdeploy` alias hardcoded `~/mc-computer` and broke wherever the repo actually sits.
+  It now derives the repo from the path this file was sourced from, in bash and zsh.
+
 ## 0.6.0 — Minecraft 26.2 (NeoForge)
 
 - `mctrace` follows a connected run of pipe, cable, rail or conduit from one block and

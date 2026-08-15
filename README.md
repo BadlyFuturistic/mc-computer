@@ -193,6 +193,7 @@ for things no data file records, such as which base is the important one.
 | `mcmotd` | set the MOTD in `compose.yaml` |
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
+| `mcblock` | what block is actually there; survey or search a region |
 | `mctrace` | follow a connected run of pipe, cable or rail; optionally convert it |
 | `mcfill` | bulk region edits, sliced past the 32768-block fill limit |
 | `mcignite` | prime TNT, finding a real TNT block near the point given |
@@ -237,6 +238,14 @@ form fails to load silently.
 
 **Structure size.** `/place template` ignores the 48-block structure-block limit for
 datapack-loaded structures on 26.2. Verified, but worth re-checking on a new version.
+
+**Chunk format** (`server/bin/region.py`). Block reads decode region files directly. The
+section layout — palette plus a packed long array, no entry straddling a long since 1.16 —
+changes between versions, and a reader that has fallen behind returns *plausible wrong
+blocks* rather than failing. `mctrace` spends one RCON call on `Reader.verify()` before
+trusting a walk, and `mcblock --verify` does the same on demand. Run one after upgrading:
+
+    mcblock <a block you can see> --verify
 
 **Mod-specific paths.** `mcbag` reads Sophisticated Backpacks' store at
 `world/dimensions/minecraft/overworld/data/sophisticatedbackpacks/backpack_storage.dat`

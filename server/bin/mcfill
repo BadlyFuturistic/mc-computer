@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, "/opt/mc")
+import region
 from mcrcon import Rcon, RconError
 
 MAX_BLOCKS_PER_FILL = 32768      # hard server limit
@@ -110,7 +111,41 @@ def validate(r, block, replace, dimension):
             name = out.split("'")[1] if "'" in out else value
             raise ValueError(
                 f"unknown {what}: {name}. Check the exact id — mod blocks rarely match "
-                f"the name used in game. /opt/mc/mcblocks <search> lists real ids.")
+                f"the name used in game. `mcblock survey <box>` lists what is really "
+                f"there, and `mcblock find <text> <box>` locates it.")
+
+
+def preflight(box, replace, dimension):
+    """Check the filter actually matches something inside the box.
+
+    validate() catches a block id the game has never heard of. This catches the other
+    half: an id that is perfectly real but absent from this region, which produces a
+    long run of fills that succeed at changing nothing. Only the region files can
+    answer that — RCON has no way to ask what a block is.
+
+    Block tags are skipped: they are resolved by the server from the loaded mods, and
+    are not recorded in the world files.
+    """
+    if not replace or replace.startswith("#"):
+        return
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+        present = reader.present(box)
+    except (region.RegionError, RconError, OSError) as e:
+        print(f"note: could not check the region up front ({e})", file=sys.stderr)
+        return
+
+    if replace in present:
+        return
+    near = sorted(n for n in present if replace.split(":")[-1] in n)
+    common = sorted(reader.survey(box).items(), key=lambda kv: -kv[1])[:8]
+    raise ValueError(
+        f"{replace} does not appear anywhere in that region, so every fill would "
+        f"change nothing.\n"
+        + (f"  Did you mean: {', '.join(near[:5])}\n" if near else "")
+        + "  What is actually there:\n"
+        + "\n".join(f"    {count:>9,}  {name}" for name, count in common))
 
 
 def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
@@ -123,14 +158,17 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
     print(f"{label}{volume:,} blocks in {len(pieces)} fill(s)"
           f"{' matching ' + replace if replace else ''}"
           f"{' — top-down, one layer at a time' if top_down else ''}")
-    if dry:
-        return 0
 
     ctx = f"execute in {dimension} run "
     suffix = f" replace {replace}" if replace else ""
     changed, failed, consecutive = 0, 0, 0
     with Rcon() as r:
+        # Both checks run before the dry-run returns: "this filter matches nothing
+        # here" is exactly what a dry run is asked to find out.
         validate(r, block, replace, dimension)
+        preflight((x1, y1, z1, x2, y2, z2), replace, dimension)
+        if dry:
+            return 0
         for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
             r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
             # A chunk force-loaded a moment ago is not there yet, and filling it

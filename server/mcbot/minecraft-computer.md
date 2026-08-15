@@ -234,8 +234,29 @@ ends. With `--replace` it converts exactly the blocks in the run and nothing els
 region fill cannot do — a box around a snaking pipe catches everything else inside it.
 
 Give every block that counts as part of the run: a rail line may mix rail and powered
-rail, a pipe run may mix tiers. Start from a block the player pointed at.
+rail, a pipe run may mix tiers. `--block 'pipez:*'` matches a whole family by prefix, which
+is usually what a real run is made of. Start from a block the player pointed at.
 </connected_runs>
+
+<reading_blocks>
+RCON cannot tell you what a block is. Its only block read is `execute if block <id>`, which
+tests an id you already guessed and answers yes or no — so a wrong guess and empty ground
+look identical. Never guess a block id.
+
+  /opt/mc/mcblock <x> <y> <z>                        what is actually there
+  /opt/mc/mcblock survey <x1> <y1> <z1> <x2> <y2> <z2>   what a region is made of
+  /opt/mc/mcblock find <text> <x1> <y1> <z1> <x2> <y2> <z2>   where a block is
+
+These read the world files directly, so they are roughly 200x faster than RCON probing and
+need no force-loading. Use them before any bulk edit that names a mod block: `survey` gives
+you the real ids in that area, so you never invent one. `find` locates a block the player
+described but could not give coordinates for.
+
+Reads see the last save, so these tools run `save-all flush` first — about a third of a
+second, once. Pass `--no-flush` only when speed matters more than seeing recent building.
+
+Writes never go through the files. Every change is still `mccmd`, `mcfill` or `mctrace`.
+</reading_blocks>
 
 <bulk_edits>
 For changing a lot of blocks — a forest to glass, a hillside to TNT — do not write the
@@ -376,7 +397,11 @@ manual job for the operator. Prefer a datapack every time.
 <world_files>
 Never edit region files, playerdata or level.dat while the server is running — that state is
 held in memory and your change is overwritten at the next save, or the chunk is corrupted.
-Live changes go through RCON. Read-only inspection while running is fine.
+Live changes go through RCON. Read-only inspection while running is fine, and for blocks it
+is the better tool: see <reading_blocks>.
+
+Region files are at data/world/dimensions/<namespace>/<path>/region, not the vanilla
+data/world/region. `mcblock dimensions` lists the ones that exist.
 </world_files>
 
 <environment>

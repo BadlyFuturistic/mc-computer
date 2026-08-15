@@ -1,11 +1,20 @@
 # mc-computer client aliases
 #
-# Source this from your shell rc:
-#     [[ -f ~/mc-computer/client/.bash_aliases ]] && source ~/mc-computer/client/.bash_aliases
+# Source this from your shell rc, from wherever the repo is checked out:
+#     [[ -f /path/to/mc-computer/client/.bash_aliases ]] && source "$_"
 #
 # Works in bash and zsh. Nothing here holds a secret; everything runs over ssh.
 
 MC_HOST="${MC_HOST:-mc-public}"
+
+# Where this file was sourced from, so the repo path is not written down a second
+# time and left to drift. Only mcdeploy needs it; everything else goes over ssh.
+# The zsh form is kept behind eval so bash never tries to expand it.
+if [ -n "${ZSH_VERSION:-}" ]; then
+    MC_REPO="$(cd "$(dirname "$(eval 'print -r -- ${(%):-%x}')")/.." && pwd)"
+else
+    MC_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 
 # --- logs -------------------------------------------------------------------
 # The interesting lines: what triggered a turn, what it said, what it ran.
@@ -93,4 +102,4 @@ mcask() {
 alias mchealth='ssh "$MC_HOST" /opt/mc/mchealth'
 
 # --- deployment -------------------------------------------------------------
-alias mcdeploy='~/mc-computer/client/deploy.sh'
+alias mcdeploy='"$MC_REPO"/client/deploy.sh'

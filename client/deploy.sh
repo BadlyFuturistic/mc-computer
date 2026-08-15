@@ -34,8 +34,15 @@ ssh "$HOST" "mkdir -p $STAGE"
 
 if [[ "$PROMPT_ONLY" == false ]]; then
     echo "==> server tools -> /opt/mc"
-    scp -q "$REPO"/server/bin/* "$HOST:/opt/mc/"
-    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink,mchealth,mcfill,mcignite,mcfable,mcpersona} && chmod 644 /opt/mc/mcrcon.py"
+    # One list drives both the copy and the modes, so a new tool cannot be copied and
+    # then left unrunnable. Regular files only: a stray __pycache__ from running the
+    # tools locally is a directory, and scp aborts the whole transfer on it.
+    NAMES=$(cd "$REPO/server/bin" && ls -p | grep -v '/$' | tr '\n' ' ')
+    (cd "$REPO/server/bin" && scp -q $NAMES "$HOST:/opt/mc/")
+    # Libraries stay 644; everything else is a command and needs to be executable.
+    ssh "$HOST" "cd /opt/mc && for f in $NAMES; do
+        case \$f in *.py) chmod 644 \"\$f\" ;; *) chmod 755 \"\$f\" ;; esac
+    done"
 fi
 
 echo "==> stamping build"

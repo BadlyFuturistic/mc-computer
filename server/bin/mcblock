@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""mcblock — what block is actually there.
+
+  mcblock <x> <y> <z> [--dimension <dim>]
+  mcblock survey <x1> <y1> <z1> <x2> <y2> <z2> [--top <n>] [--match <text>]
+  mcblock find <text> <x1> <y1> <z1> <x2> <y2> <z2> [--limit <n>]
+  mcblock dimensions
+
+  mcblock 950 66 293                       -> waystones:andesite_waystone
+  mcblock survey 300 60 200 340 80 240     what a region is made of
+  mcblock find pipez 300 50 200 340 70 240 where a block actually is
+  mcblock 950 66 293 --verify              cross-check one read against the server
+
+  --dimension <dim>  default minecraft:overworld
+  --no-flush         skip the save; faster, but misses changes since the last save
+  --verify           confirm the read against RCON before trusting it
+
+RCON cannot answer this question. Its only block read is `execute if block <id>`,
+which tests an id you already guessed and replies yes or no — so a wrong guess and an
+empty space look identical. That is what let a mistyped block id run a hundred fills
+and change nothing.
+
+Reads come from the region files, which hold the last save. `save-all flush` runs
+first so the answer is current; it costs about a third of a second, once, however many
+blocks are read after it.
+"""
+import itertools
+import sys
+import time
+
+sys.path.insert(0, "/opt/mc")
+import region  # noqa: E402
+from mcrcon import RconError  # noqa: E402
+
+
+def take(args, flag, cast=str, default=None):
+    if flag in args:
+        i = args.index(flag)
+        value = cast(args[i + 1])
+        del args[i:i + 2]
+        return value
+    return default
+
+
+def coords(values, count):
+    try:
+        return [int(v) for v in values[:count]]
+    except (ValueError, IndexError):
+        sys.exit("coordinates must be whole numbers")
+
+
+def report_point(reader, x, y, z, verify):
+    block = reader.block(x, y, z)
+    if block is None:
+        print(f"{x} {y} {z}: nothing stored — that chunk has never been generated, "
+              f"or has never been saved")
+        return 1
+    print(f"{x} {y} {z}: {block}")
+    if verify:
+        agree, _, verdict = reader.verify(x, y, z)
+        print(f"  verified against the server: {'agrees' if agree else 'DISAGREES'}"
+              + (f" ({verdict})" if not agree else ""))
+        if not agree:
+            print("  the reader is out of step with this world version — "
+                  "use RCON until it is fixed", file=sys.stderr)
+            return 2
+    return 0
+
+
+def report_survey(reader, box, top, match):
+    started = time.time()
+    counts = reader.survey(box)
+    if match:
+        counts = {k: v for k, v in counts.items() if match.lower() in k.lower()}
+    if not counts:
+        print("nothing found" + (f" matching '{match}'" if match else ""))
+        return 1
+    total = sum(counts.values())
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    print(f"{total:,} blocks, {len(counts)} distinct ids  ({time.time() - started:.2f}s)")
+    for name, count in ranked[:top]:
+        print(f"  {count:>10,}  {name}")
+    if len(ranked) > top:
+        print(f"  ... and {len(ranked) - top} more (raise --top to see them)")
+    return 0
+
+
+def matches(reader, text, box):
+    """Every block in the box whose id contains text, in scan order."""
+    x1, y1, z1, x2, y2, z2 = region._ordered(box)
+    needle = text.lower()
+    for cx in range(x1 >> 4, (x2 >> 4) + 1):
+        for cz in range(z1 >> 4, (z2 >> 4) + 1):
+            chunk = reader.chunk(cx, cz)
+            if not chunk:
+                continue
+            ox, oz = cx * 16, cz * 16
+            for section_y in range(y1 >> 4, (y2 >> 4) + 1):
+                # Skip a whole section when its palette cannot contain a match.
+                found = chunk.sections.get(section_y)
+                if not found or not any(n and needle in n.lower() for n in found[0]):
+                    continue
+                for lx, wy, lz, name in chunk.section_blocks(section_y):
+                    wx, wz = ox + lx, oz + lz
+                    if (name and needle in name.lower()
+                            and x1 <= wx <= x2 and z1 <= wz <= z2 and y1 <= wy <= y2):
+                        yield (wx, wy, wz, name)
+
+
+def report_find(reader, text, box, limit):
+    # islice stops the scan at the limit. Breaking out of the innermost loop by hand
+    # only ends that section, so every later chunk adds one more hit past the limit.
+    hits = list(itertools.islice(matches(reader, text, box), limit))
+    if not hits:
+        print(f"no block id containing '{text}' in that box")
+        return 1
+    print(f"{len(hits)}{' (limit reached)' if len(hits) >= limit else ''} match(es):")
+    for x, y, z, name in hits:
+        print(f"  {x} {y} {z}  {name}")
+    return 0
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+
+    dimension = take(args, "--dimension", str, "minecraft:overworld")
+    top = take(args, "--top", int, 15)
+    limit = take(args, "--limit", int, 50)
+    match = take(args, "--match", str, None)
+    no_flush = "--no-flush" in args
+    verify = "--verify" in args
+    args = [a for a in args if a not in ("--no-flush", "--verify")]
+
+    try:
+        if args[0] == "dimensions":
+            for dim in region.dimensions():
+                print(f"  {dim}")
+            return
+
+        reader = region.Reader(dimension)
+        if not no_flush:
+            # Without this, anything built since the last save is simply not there.
+            reader.flush()
+
+        if args[0] == "survey":
+            box = coords(args[1:], 6)
+            if len(box) != 6:
+                sys.exit("survey needs six coordinates: x1 y1 z1 x2 y2 z2")
+            sys.exit(report_survey(reader, box, top, match))
+
+        if args[0] == "find":
+            if len(args) < 8:
+                sys.exit("find needs a search word and six coordinates")
+            box = coords(args[2:], 6)
+            sys.exit(report_find(reader, args[1], box, limit))
+
+        point = coords(args, 3)
+        if len(point) != 3:
+            sys.exit(__doc__)
+        sys.exit(report_point(reader, *point, verify))
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e} — pass --no-flush to read the last save anyway")
+
+
+if __name__ == "__main__":
+    main()

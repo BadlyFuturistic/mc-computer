@@ -4,179 +4,205 @@
   mctrace <x> <y> <z> --block <id> [--block <id> ...] [options]
 
   mctrace 301 56 208 --block pipez:energy_pipe
-  mctrace 301 56 208 --block pipez:energy_pipe --replace pipez:universal_pipe
+  mctrace 301 56 208 --block 'pipez:*' --replace pipez:universal_pipe
   mctrace 100 64 100 --block minecraft:rail --block minecraft:powered_rail
 
-  --block <id>       a block that counts as part of the run; repeatable
+  --block <id>       a block that counts as part of the run; repeatable.
+                     A trailing * matches by prefix: 'pipez:*' takes every kind of
+                     pipe, which is what a real run is usually made of.
   --replace <id>     convert every block found into this
-  --max <n>          stop after this many blocks (default 4000)
+  --max <n>          stop after this many blocks (default 100000)
   --dimension <dim>  default minecraft:overworld
   --list             print every coordinate, not just the summary
+  --no-flush         skip the save; faster, but misses anything built since it
 
 Pipes, cable, rail and conduit runs wander. Finding where one goes by hand means
 probing block by block, which is slow and easy to stop short — a run that looks
-finished often continues around a corner. This walks the whole connected run from
-one starting block and reports what it found: how many blocks, the bounding box, and
-the ends of the run.
+finished often continues around a corner. This walks the whole connected run from one
+starting block and reports what it found: how many blocks, the bounding box, and the
+ends of the run.
 
 With --replace it converts exactly the blocks in the run and nothing else, which a
 region fill cannot do: a box around a snaking pipe catches everything else inside it.
+
+The walk reads the region files, so it does not force-load chunks, wait for them to
+settle, or spend a round trip per block. Reads see the last save, so it saves once at
+the start. Conversion still goes through RCON, because writing to the files under a
+running server corrupts them.
 """
-import re
 import sys
 import time
 
 sys.path.insert(0, "/opt/mc")
-from mcrcon import Rcon, RconError
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
 
-TAG = "mctrace"
 NEIGHBOURS = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
-CHUNK_MARGIN = 2          # chunks of slack when force-loading around the frontier
+CHUNK_MARGIN = 2          # chunks of slack when force-loading for the conversion
 SETTLE = 0.6              # seconds to let a force-loaded chunk actually load
-LOAD_MARGIN = 6           # chunks loaded around the frontier; bigger means fewer reloads
+REPORT_EVERY = 20_000     # progress line on very long runs
 
 
-def chunk_box(cells, margin=CHUNK_MARGIN):
-    xs = [c[0] for c in cells]; zs = [c[2] for c in cells]
-    return (min(xs) - margin * 16, min(zs) - margin * 16,
-            max(xs) + margin * 16, max(zs) + margin * 16)
+def matcher(patterns):
+    """Turn the --block arguments into one test.
+
+    Exact ids are compared directly; a trailing * matches by prefix, so one argument
+    covers a family of blocks without naming every variant.
+    """
+    exact = {p for p in patterns if not p.endswith("*")}
+    prefixes = tuple(p[:-1] for p in patterns if p.endswith("*"))
+
+    def test(name):
+        return bool(name) and (name in exact or name.startswith(prefixes))
+
+    return test
 
 
-def inside(cells, box, edge=16):
-    """True while every cell is well inside the loaded box, not near its edge."""
-    x0, z0, x1, z1 = box
-    return all(x0 + edge <= c[0] <= x1 - edge and z0 + edge <= c[2] <= z1 - edge
-               for c in cells)
-
-
-def trace(r, start, blocks, ctx, limit):
-    """Breadth-first walk of the connected run. Returns the set of cells found."""
+def trace(reader, start, wanted, limit):
+    """Breadth-first walk of the connected run. Returns the cells found, in order."""
     found = {start}
+    order = [start]
     frontier = [start]
-    loaded = None
-
     while frontier and len(found) < limit:
-        # Load a generous box and keep it until the trace leaves it. Reloading every
-        # step means waiting for a chunk to settle every step, which is nearly all of
-        # the runtime on a long run.
-        if loaded is None or not inside(frontier, loaded):
-            box = chunk_box(frontier, margin=LOAD_MARGIN)
-            if loaded:
-                r.command(f"{ctx}forceload remove {loaded[0]} {loaded[1]} {loaded[2]} {loaded[3]}")
-            r.command(f"{ctx}forceload add {box[0]} {box[1]} {box[2]} {box[3]}")
-            # A newly force-loaded chunk is not readable for a tick or two. Probing
-            # immediately reports every block as absent, which looks like the run
-            # ending rather than a chunk that has not arrived.
-            time.sleep(SETTLE)
-            loaded = box
-
-        candidates = []
+        following = []
         for x, y, z in frontier:
             for dx, dy, dz in NEIGHBOURS:
-                n = (x + dx, y + dy, z + dz)
-                if n in found or not (-64 < n[1] < 320):
+                cell = (x + dx, y + dy, z + dz)
+                if cell in found:
                     continue
-                candidates.append(n)
-        candidates = list(dict.fromkeys(candidates))
-        if not candidates:
-            break
-
-        # One probe per candidate per block type. A match drops a marker, so the
-        # whole layer comes back in a single read instead of one call per block.
-        for n in candidates:
-            for b in blocks:
-                r.command(f"{ctx}execute if block {n[0]} {n[1]} {n[2]} {b} "
-                          f'run summon marker {n[0]} {n[1]} {n[2]} {{Tags:["{TAG}"]}}')
-        out = r.command(f"{ctx}execute as @e[tag={TAG}] run data get entity @s Pos")
-        r.command(f"{ctx}kill @e[tag={TAG}]")
-
-        frontier = []
-        for line in out.splitlines():
-            m = re.search(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]", line)
-            if not m:
-                continue
-            cell = tuple(int(float(v)) for v in m.groups())
-            if cell not in found:
+                if not wanted(reader.block(*cell)):
+                    continue
                 found.add(cell)
-                frontier.append(cell)
+                order.append(cell)
+                following.append(cell)
+                if len(found) >= limit:
+                    return order
+        frontier = following
+        if len(order) >= REPORT_EVERY and len(order) % REPORT_EVERY < len(following):
+            print(f"  {len(order):,} blocks so far...", file=sys.stderr, flush=True)
+    return order
 
-    if loaded:
-        r.command(f"{ctx}forceload remove {loaded[0]} {loaded[1]} {loaded[2]} {loaded[3]}")
-    return found
+
+def convert(found, replace, dimension):
+    """Set every cell in the run, over RCON. Returns how many actually changed."""
+    xs = [c[0] for c in found]
+    zs = [c[2] for c in found]
+    box = (min(xs) - CHUNK_MARGIN * 16, min(zs) - CHUNK_MARGIN * 16,
+           max(xs) + CHUNK_MARGIN * 16, max(zs) + CHUNK_MARGIN * 16)
+    ctx = f"execute in {dimension} run "
+    changed = 0
+    with Rcon() as rcon:
+        rcon.command(f"{ctx}forceload add {box[0]} {box[1]} {box[2]} {box[3]}")
+        # A chunk force-loaded a moment ago is not there yet, and setting a block in
+        # it silently does nothing.
+        time.sleep(SETTLE)
+        try:
+            for i, (x, y, z) in enumerate(found, 1):
+                out = rcon.command(f"{ctx}setblock {x} {y} {z} {replace}")
+                if "Changed the block" in out:
+                    changed += 1
+                elif "Unknown block" in out or "<--[HERE]" in out:
+                    raise ValueError(f"unknown block: {replace}")
+                if i % 500 == 0:
+                    print(f"  converted {i:,}/{len(found):,}...", flush=True)
+        finally:
+            rcon.command(f"{ctx}forceload remove {box[0]} {box[1]} {box[2]} {box[3]}")
+    return changed
 
 
 def main() -> None:
     args = sys.argv[1:]
-    blocks, replace, limit, dim = [], None, 4000, "minecraft:overworld"
-    show_list = "--list" in args
+    blocks = []
     while "--block" in args:
-        i = args.index("--block"); blocks.append(args[i + 1]); del args[i:i + 2]
+        i = args.index("--block")
+        blocks.append(args[i + 1])
+        del args[i:i + 2]
+
+    replace = limit = None
+    dimension = "minecraft:overworld"
     for flag, cast in (("--replace", str), ("--max", int), ("--dimension", str)):
         if flag in args:
-            i = args.index(flag); val = cast(args[i + 1]); del args[i:i + 2]
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
             if flag == "--replace":
-                replace = val
+                replace = value
             elif flag == "--max":
-                limit = val
+                limit = value
             else:
-                dim = val
+                dimension = value
+    limit = limit or 100_000
+    show_list = "--list" in args
+    no_flush = "--no-flush" in args
     coords = [a for a in args if not a.startswith("--")]
+
     if len(coords) != 3 or not blocks:
         sys.exit(__doc__)
     try:
         start = tuple(int(c) for c in coords)
     except ValueError:
-        sys.exit("coordinates must be integers")
+        sys.exit("coordinates must be whole numbers")
 
-    ctx = f"execute in {dim} run "
     try:
-        with Rcon() as r:
-            # Load the starting chunk before looking at it. An unloaded chunk answers
-            # every block test with a miss, which reads exactly like "wrong block".
-            r.command(f"{ctx}forceload add {start[0]} {start[2]} {start[0]} {start[2]}")
-            time.sleep(SETTLE)
-            # `run list` prints the player list when the condition holds and nothing
-            # when it does not, which makes it a usable yes/no over RCON.
-            hit = any(
-                r.command(f"{ctx}execute if block {start[0]} {start[1]} {start[2]} {b} "
-                          f"run list").strip()
-                for b in blocks)
-            r.command(f"{ctx}forceload remove {start[0]} {start[2]} {start[0]} {start[2]}")
-            if not hit:
-                sys.exit(f"no matching block at {start[0]} {start[1]} {start[2]} — "
-                         f"expected one of: {', '.join(blocks)}")
+        reader = region.Reader(dimension)
+        if not no_flush:
+            reader.flush()
 
-            found = trace(r, start, blocks, ctx, limit)
+        here = reader.block(*start)
+        wanted = matcher(blocks)
+        if not wanted(here):
+            sys.exit(f"no matching block at {start[0]} {start[1]} {start[2]} — "
+                     f"found {here or 'nothing stored there'}, expected one of: "
+                     f"{', '.join(blocks)}")
 
-            xs = [c[0] for c in found]; ys = [c[1] for c in found]; zs = [c[2] for c in found]
-            # Ends of the run: cells with a single neighbour in the run.
-            ends = [c for c in found
-                    if sum((c[0]+d[0], c[1]+d[1], c[2]+d[2]) in found for d in NEIGHBOURS) == 1]
+        # The chunk format changes between versions, and a reader that has fallen
+        # behind returns plausible wrong answers rather than failing. One RCON call
+        # settles it before a whole run is trusted.
+        agree, _, verdict = reader.verify(*start)
+        if not agree:
+            sys.exit(f"the block reader disagrees with the server at the start point "
+                     f"(file says {here}, server says {verdict}). The world format has "
+                     f"probably changed — do not trust these reads.")
 
-            print(f"{len(found)} block(s) in the run"
-                  + (f" (stopped at the {limit} limit)" if len(found) >= limit else ""))
-            print(f"extent: x {min(xs)}..{max(xs)}  y {min(ys)}..{max(ys)}  z {min(zs)}..{max(zs)}")
-            if ends:
-                print("ends: " + "; ".join(f"{e[0]} {e[1]} {e[2]}" for e in ends[:6])
-                      + (f" (+{len(ends) - 6} more)" if len(ends) > 6 else ""))
-            if show_list:
-                for c in sorted(found):
-                    print(f"  {c[0]} {c[1]} {c[2]}")
+        started = time.time()
+        found = trace(reader, start, wanted, limit)
+        elapsed = time.time() - started
 
-            if replace:
-                box = chunk_box(list(found))
-                r.command(f"{ctx}forceload add {box[0]} {box[1]} {box[2]} {box[3]}")
-                time.sleep(SETTLE)
-                changed = 0
-                for x, y, z in found:
-                    out = r.command(f"{ctx}setblock {x} {y} {z} {replace}")
-                    if "Changed the block" in out:
-                        changed += 1
-                    elif "Unknown block" in out or "<--[HERE]" in out:
-                        r.command(f"{ctx}forceload remove {box[0]} {box[1]} {box[2]} {box[3]}")
-                        sys.exit(f"unknown block: {replace}")
-                r.command(f"{ctx}forceload remove {box[0]} {box[1]} {box[2]} {box[3]}")
-                print(f"converted {changed} of {len(found)} to {replace}")
+        xs = [c[0] for c in found]
+        ys = [c[1] for c in found]
+        zs = [c[2] for c in found]
+        run = set(found)
+        ends = [c for c in found
+                if sum((c[0] + d[0], c[1] + d[1], c[2] + d[2]) in run
+                       for d in NEIGHBOURS) == 1]
+
+        print(f"{len(found):,} block(s) in the run"
+              + (f" (stopped at the {limit:,} limit)" if len(found) >= limit else "")
+              + f"  ({elapsed:.2f}s)")
+        print(f"extent: x {min(xs)}..{max(xs)}  y {min(ys)}..{max(ys)}  "
+              f"z {min(zs)}..{max(zs)}")
+        if ends:
+            print("ends: " + "; ".join(f"{e[0]} {e[1]} {e[2]}" for e in ends[:6])
+                  + (f" (+{len(ends) - 6} more)" if len(ends) > 6 else ""))
+        kinds = {}
+        for cell in found:
+            name = reader.block(*cell)
+            kinds[name] = kinds.get(name, 0) + 1
+        if len(kinds) > 1:
+            print("made of: " + ", ".join(
+                f"{n} x{c:,}" for n, c in sorted(kinds.items(), key=lambda kv: -kv[1])))
+        if show_list:
+            for cell in sorted(found):
+                print(f"  {cell[0]} {cell[1]} {cell[2]}")
+
+        if replace:
+            changed = convert(found, replace, dimension)
+            print(f"converted {changed:,} of {len(found):,} to {replace}")
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except ValueError as e:
+        sys.exit(str(e))
     except RconError as e:
         sys.exit(f"rcon failed: {e}")
 
