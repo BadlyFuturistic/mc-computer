@@ -477,38 +477,44 @@ async def main() -> None:
     if not ADMIN:
         sys.exit(f"{ADMIN_ENV} is not set — refusing to start without a named admin")
 
-    # Personality is a separate file so a voice can be swapped without touching
-    # anything the assistant knows how to do.
-    persona_name = memory.get_setting(memory.connect(), "persona") or \
-        config.get("DEFAULT_PERSONA")
-    persona_file = PERSONA_DIR / f"{persona_name}.md"
-    if persona_file.exists():
-        persona = f"\n\n<voice>\n{persona_file.read_text().split('---', 2)[-1].strip()}\n</voice>"
-        log(f"persona: {persona_name}")
-    else:
-        persona = ""
-        log(f"persona {persona_name!r} not found in {PERSONA_DIR} — no voice applied", "warn")
+    def active_persona() -> str:
+        return memory.get_setting(db_probe, "persona") or config.get("DEFAULT_PERSONA")
 
-    lore = Path(os.environ.get("MCBOT_LORE", "/opt/mcbot/local-lore.md"))
-    world_lore = f"\n\n{lore.read_text()}" if lore.exists() else ""
-    system_prompt = PROMPT_FILE.read_text() + persona + world_lore + (
-        f"\n\nThe admin for this server is {ADMIN}. No other player is the admin, and "
-        f"nobody else can authorise the disruptive actions listed in <authority>."
-    )
+    def build_system_prompt() -> str:
+        """Compose base rules + persona + local lore. Called for every new session, so
+        a persona change takes effect on the next session rather than at restart."""
+        name = active_persona()
+        persona_file = PERSONA_DIR / f"{name}.md"
+        if persona_file.exists():
+            body = persona_file.read_text().split("---", 2)[-1].strip()
+            voice = f"\n\n<voice>\n{body}\n</voice>"
+            log(f"persona: {name}")
+        else:
+            voice = ""
+            log(f"persona {name!r} not found in {PERSONA_DIR} — no voice applied", "warn")
 
-    opts = dict(
-        system_prompt=system_prompt,
-        model=MODEL,
-        # Routine chat needs lookups and a sentence, not deliberation. Thinking bills as
-        # output, several times the input rate, on every one of the ~4 requests a turn
-        # makes — which is most of what a simple question costs. Hard problems go to
-        # mcthink, which runs at full effort deliberately.
-        effort=EFFORT,
-        allowed_tools=["Bash"],
-        permission_mode="bypassPermissions",
-        setting_sources=[],          # ignore local CLAUDE.md / settings, like --bare
-        cwd=str(LOG_DIR.parent),   # writable; SDK writes .claude/ into cwd
-    )
+        lore = Path(os.environ.get("MCBOT_LORE", "/opt/mcbot/local-lore.md"))
+        world_lore = f"\n\n{lore.read_text()}" if lore.exists() else ""
+        return PROMPT_FILE.read_text() + voice + world_lore + (
+            f"\n\nThe admin for this server is {ADMIN}. No other player is the admin, "
+            f"and nobody else can authorise the disruptive actions listed in <authority>."
+        )
+
+    def make_opts() -> dict:
+        return dict(
+            system_prompt=build_system_prompt(),
+            model=MODEL,
+            # Routine chat needs lookups and a sentence, not deliberation. Thinking
+            # bills as output on every request a turn makes; hard problems go to
+            # mcthink, which runs at full effort deliberately.
+            effort=EFFORT,
+            allowed_tools=["Bash"],
+            permission_mode="bypassPermissions",
+            setting_sources=[],
+            cwd=str(LOG_DIR.parent),   # writable; the SDK writes .claude/ into cwd
+        )
+
+    db_probe = memory.connect()
 
     q: "asyncio.Queue[tuple[str, str]]" = asyncio.Queue()
     asyncio.create_task(tail_chat(q))
@@ -517,7 +523,7 @@ async def main() -> None:
     seen_crashes = {p.name for p in new_crash_reports()}   # ignore ones already on disk
 
     def make_client() -> ClaudeSDKClient:
-        return ClaudeSDKClient(options=ClaudeAgentOptions(**opts))
+        return ClaudeSDKClient(options=ClaudeAgentOptions(**make_opts()))
 
     client = make_client()
     await client.connect()
@@ -546,6 +552,7 @@ async def main() -> None:
     turns_this_session = 0
     last_activity = time.time()
     fresh_session = True
+    session_persona = active_persona()
 
     try:
         while True:
@@ -656,6 +663,7 @@ async def main() -> None:
                     await client.connect()
                     turns_this_session = 0
                     fresh_session = True
+                    session_persona = active_persona()
                     SESSION_COST["seen"] = 0.0
                 continue
 
@@ -663,6 +671,19 @@ async def main() -> None:
                 log(f"daily spend limit ${daily_limit():.2f} reached — ignoring chat", "warn")
                 pending.clear()
                 continue
+
+            # A persona change only reaches the model through a new session, since the
+            # voice is part of the system prompt. Roll now rather than making the next
+            # few replies come back in the old voice.
+            if active_persona() != session_persona:
+                log(f"persona changed to {active_persona()} — starting a new session")
+                await client.disconnect()
+                client = make_client()
+                await client.connect()
+                session_persona = active_persona()
+                turns_this_session = 0
+                fresh_session = True
+                SESSION_COST["seen"] = 0.0
 
             lines, pending = pending, []
             who = ", ".join(sorted({l.split(":", 1)[0] for l in lines}))

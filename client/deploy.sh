@@ -48,6 +48,7 @@ echo "==> bot code + prompt -> staging"
 scp -q "$REPO/server/mcbot/comp-daemon.py"        "$HOST:$STAGE/comp-daemon.py"
 scp -q "$REPO/server/mcbot/memory.py"             "$HOST:$STAGE/memory.py"
 scp -q "$REPO/server/mcbot/config.py"             "$HOST:$STAGE/config.py"
+scp -q "$REPO/server/mcbot/runas.py"              "$HOST:$STAGE/runas.py"
 ssh "$HOST" "mkdir -p $STAGE/personas"
 scp -q "$REPO"/server/personas/*.md               "$HOST:$STAGE/personas/"
 scp -q "$REPO/server/mcbot/minecraft-computer.md" "$HOST:$STAGE/minecraft-computer.md"
@@ -69,6 +70,7 @@ ssh -t "$HOST" "
     sudo install -o root -g root -m 755 $STAGE/comp-daemon.py        /opt/mcbot/comp-daemon.py &&
     sudo install -o root -g root -m 644 $STAGE/memory.py             /opt/mcbot/memory.py &&
     sudo install -o root -g root -m 644 $STAGE/config.py             /opt/mcbot/config.py &&
+    sudo install -o root -g root -m 644 $STAGE/runas.py              /opt/mcbot/runas.py &&
     sudo install -d -o root -g root -m 755 /opt/mcbot/personas &&
     for f in $STAGE/personas/*.md; do
         # Never overwrite a persona that already exists — they are edited in place.

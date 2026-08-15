@@ -10,7 +10,9 @@ Personality lives in /opt/mcbot/personas/*.md, separate from everything the assi
 knows how to do, so a voice can be swapped by dropping in a file. Whether players other
 than the admin may switch is PLAYERS_CAN_CHANGE_PERSONA in /etc/mcbot/config.
 
-A switch takes effect on the next request; it does not interrupt work in progress.
+A switch starts a new session, because the voice is part of the system prompt.
+The assistant therefore forgets the current conversation, though not its memory.
+Work in progress is not interrupted.
 """
 import os
 import re
@@ -18,6 +20,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/mcbot")
+import runas  # noqa: E402
+
+runas.ensure_service_user()
+
 import config  # noqa: E402
 import memory  # noqa: E402
 
@@ -93,7 +99,8 @@ def main() -> None:
             sys.exit(f"no such persona: {name}. Available: {', '.join(have) or 'none'}")
         memory.set_setting(db, "persona", name)
         memory.log_event(db, "note", f"persona set to {name}", player=by)
-        print(f"persona set to {name} — takes effect on the next request")
+        print(f"persona set to {name} — the assistant starts a new session for it, "
+              f"so its memory of the current conversation is reset")
 
     else:
         sys.exit(__doc__)

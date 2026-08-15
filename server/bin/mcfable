@@ -25,6 +25,10 @@ VENV = "/opt/mcbot/venv"
 if sys.prefix != VENV and os.access(f"{VENV}/bin/python", os.X_OK):
     os.execv(f"{VENV}/bin/python", [f"{VENV}/bin/python", os.path.abspath(__file__), *sys.argv[1:]])
 
+import runas  # noqa: E402
+
+runas.ensure_service_user()
+
 import memory  # noqa: E402
 from claude_agent_sdk import (  # noqa: E402
     AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock,

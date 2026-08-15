@@ -18,6 +18,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/mcbot")
+import runas  # noqa: E402
+
+runas.ensure_service_user()
+
 import memory
 
 

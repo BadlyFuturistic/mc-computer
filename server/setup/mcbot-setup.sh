@@ -110,7 +110,8 @@ EOF
 # The admin asks questions from a terminal with mcask, which must run as the service
 # account to reach its session store. SETENV allows the HOME override it needs.
 cat >> /etc/sudoers.d/mcbot <<EOF
-${ADMIN_USER} ALL=(mcbot) NOPASSWD: SETENV: /opt/mc/mcask
+Cmnd_Alias ADMIN_TOOLS = /opt/mc/mcask, /opt/mc/mcpersona, /opt/mc/mcnote, /opt/mc/mcfable
+${ADMIN_USER} ALL=(mcbot) NOPASSWD: SETENV: ADMIN_TOOLS
 EOF
 chmod 440 /etc/sudoers.d/mcbot
 visudo -c -f /etc/sudoers.d/mcbot
