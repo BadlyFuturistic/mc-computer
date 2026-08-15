@@ -4,7 +4,7 @@
   mcbore --player <name> [options]
   mcbore <x> <y> <z> --facing <+x|-x|+z|-z> [options]
 
-  mcbore --player HangryAssassin --width 5 --line minecraft:stone_bricks \\
+  mcbore --player <name> --width 5 --line minecraft:stone_bricks \\
          --light minecraft:glowstone --every 3
 
   --player <name>    start at their feet, bore the way they are looking
