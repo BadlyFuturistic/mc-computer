@@ -28,3 +28,6 @@ server/mcbot/local-lore.md
 # Personas that stay local — quoted material, private voices
 server/personas/frank.md
 server/personas/*.local.md
+
+# Personal project rules — preferences and operational notes, not shared
+CLAUDE.local.md
