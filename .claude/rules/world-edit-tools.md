@@ -3,7 +3,9 @@ paths:
   - "server/bin/**"
 ---
 
-# Writing tools that edit the world
+<!-- last-verified: 2026-08-15 -->
+
+# Writing and running the world-editing tools
 
 Each rule below came from a tool that shipped, ran against the live world, and did
 damage a player had to report. They are not style preferences.
@@ -24,8 +26,8 @@ was swallowed, every setting became its default, and `PLAYERS_CAN_CHANGE_PERSONA
 defaults permissive — so the admin's `false` never took effect. An input that cannot be
 read is not an input.
 
-**Move arithmetic out of the model.** The model got tunnel extents wrong every time it
-derived them from coordinates. Given `mcbore`, which finds both ends in one pass, it has
+**Put the arithmetic in the tool, not in the conversation.** Tunnel extents derived from
+coordinates in a reply were wrong every time. `mcbore` finds both ends in one pass and has
 not been wrong since. A deterministic tool beats a better model here, at no cost per call.
 
 **Derive lists; do not maintain them.** `deploy.sh` had a hand-written `chmod` list.
@@ -69,12 +71,13 @@ reports every block absent, which reads as "wrong block" rather than "not loaded
 One `mcfill` run ground through 129 slices changing nothing. Every tool that force-loads
 sleeps ~0.6s afterwards.
 
-**A region read sees the last save.** Tools call `save-all flush` (~0.3s) first. When
-verifying a change you just made, never pass `--no-flush` — you will read stale data and
-conclude the change failed.
+**A region read sees the last save.** Every tool that reads the world calls
+`save-all flush` (~0.3s) first. Offer `--no-flush` only as an opt-out for bulk reads that
+do not follow a write.
 
 ## Testing
 
 Test writes with `--dry-run` first. A test run of `mcbore` without it punched a five-block
-hole through a tunnel a player was standing in. If you must write, use empty air far from
-anything — around `2600, 120, -1800` is unused — then clean up and verify it is clean.
+hole through a tunnel a player was standing in. If you must write, pick empty air far from
+anything a player built, confirm it is empty with `mcblock` before you write, then clean up
+and verify it is clean.
