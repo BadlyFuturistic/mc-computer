@@ -5,6 +5,38 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.16.0 — Minecraft 26.2 (NeoForge)
+
+**A bore following a road ran 73 blocks out the far end of it, because it was looking for
+solid rock and a hill does not stop where the carriageway does.** It left lined, lit tunnel
+with nothing to drive on, and the repave afterwards could only report that most of the
+strip was not road. Boring where there is no road at all is a thing worth having; boring
+past the end of one is not.
+
+- `mcbore` now stops where the carriageway stops when it is following a road. The road
+  surface is the row under the tunnel floor, so this costs one read per step. It says where
+  the road ran out and that paving further is what lets it bore further. `--no-align` and
+  explicit coordinates are unchanged and still bore through whatever is in the way.
+- New `mcpave`: carries a carriageway on from the end of a road by cloning an intact slice
+  along, so the surface comes from road that is already correct rather than from a block
+  named by hand. It takes the same `<y> <x1> <z1> <x2> <z2>` strip as `mcrepave`, one level
+  down, and leaves markings to `mcrepave`.
+- `mcpave` also makes the volume over the new road solid, which is not obvious but is what
+  makes a crossing borable. Water and air read as passable, so a bore scanning ahead counts
+  them as open ground and decides it is through — four such steps end the scan. Filling
+  them first turns a flooded crossing into ordinary hillside, which `mcbore` already lines
+  before it cuts, and the lining is what keeps the water out.
+- Telling road from ground took two tests, and the dry run caught the first attempt using
+  only one. Solid is not road: asked to extend the road west, `mcpave` first offered to
+  clone the rock face at the tunnel mouth, then a stone band that happened to stop five
+  blocks past the strip. A slice counts as carriageway only if it stops at its edges within
+  two blocks *and* repeats identically for sixteen slices along. Ground fails one or the
+  other; loosen either and it passes.
+- The west road now runs from x=-3399 to the coast at x=-3686: 288 blocks of new
+  carriageway, 195 of new tunnel lined and lit, four water crossings sealed, and the last
+  19 blocks in open cutting to the shore. Centre-line dashes hold a five-block spacing over
+  the whole 450-block route with no break at any join.
+
 ## 0.15.1 — Minecraft 26.2 (NeoForge)
 
 **`mcrepave` filled a fresh tunnel with the hillside it had just been bored through, and

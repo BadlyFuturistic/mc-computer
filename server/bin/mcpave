@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""mcpave — extend a carriageway, and make the ground over it something a bore can cut.
+
+  mcpave <y> <x1> <z1> <x2> <z2> [--height <n>] [--fill <block>] [options]
+
+  mcpave 62 -3399 239 -3450 243          carry the road on 51 blocks
+
+  <y>                the carriageway level — one below where the markings sit
+  --height <n>       make the tunnel volume over the new road solid, this high
+                     (default 3, matching mcbore)
+  --fill <block>     what to make that volume with       (default minecraft:stone)
+  --no-fill          leave the volume over the new road exactly as it is
+  --sample <n>       how far to look for intact road to copy      (default 30)
+  --dry-run          report what it found, change nothing
+  --dimension <dim>  default minecraft:overworld
+
+A tunnel and the road through it are built in that order — road first. mcbore now stops
+where the carriageway stops, so extending a road is what lets a tunnel go further, and
+doing it by hand means naming the surface block and hoping it is the right one.
+
+Nothing here decides what a road is made of. It finds an intact slice across the road
+just beyond the end of the strip and clones it along, so the carriageway comes from a
+piece of road that is already correct. Markings are not its business: they sit a level
+higher, they are what mcrepave puts back, and a bore is going to clear that level
+anyway.
+
+Finding that slice is the part worth being careful about. Solid ground is not road. A
+hillside, a beach and a field are every bit as solid and continuous as a carriageway,
+and the first version of this tool, asked to carry a road on from the mouth of a
+tunnel, took the rock face in front of it for road and offered to clone stone, dirt and
+sand the whole way to the coast. A slice counts as road only if it stops at the sides
+like a road and repeats along its length like something that was built. Natural ground
+fails one test or the other; a beach passes the first and fails the second.
+
+The volume over the new road is made solid, and that is the part which is not obvious.
+Water and air read as passable, so a bore scanning ahead counts them as clear ground and
+decides it is out the far side — four such steps in a row end the scan. A road laid
+across an underground lake would leave a tunnel that stopped dead at the water, still
+open to it. Filling that volume first turns the crossing into ordinary hillside, which
+is a thing mcbore already knows how to cut and, more to the point, to line before it
+cuts. The lining is what keeps the water out afterwards.
+"""
+import sys
+from collections import Counter
+
+sys.path.insert(0, "/opt/mc")
+import builder  # noqa: E402
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+SAMPLE = 30           # how far to look for an intact slice to copy
+SETTLE = 0.6          # seconds for force-loaded chunks to become writable
+SHOULDER = 2          # how far past the strip a carriageway may reach, in total
+REACH = 24            # how far across to look before calling a surface unbounded
+RUN = 16              # identical slices in a row before a surface counts as built
+
+
+def at(t: int, across: int, along_x: bool) -> tuple[int, int]:
+    """World x, z from a position along the road and one across it."""
+    return (t, across) if along_x else (across, t)
+
+
+def slice_names(reader, y, t, acrosses, along_x):
+    """The blocks across the road at `t`, or None if any of them is passable.
+
+    A road is continuous across its width. One passable spot means the edge of the
+    carriageway, a hole, or open ground that merely happens to sit beside it, and
+    copying any of those along would carry the flaw the whole way.
+    """
+    names = []
+    for across in acrosses:
+        x, z = at(t, across, along_x)
+        name = reader.block(x, y, z)
+        if region.passable(name):
+            return None
+        names.append(name)
+    return names
+
+
+def spreads_across(reader, y, t, acrosses, along_x, kinds) -> bool:
+    """Whether this surface carries on sideways, which a carriageway does not."""
+    extra = 0
+    for step in (-1, 1):
+        edge = (acrosses[0] - 1) if step < 0 else (acrosses[-1] + 1)
+        for i in range(REACH):
+            x, z = at(t, edge + step * i, along_x)
+            if reader.block(x, y, z) not in kinds:
+                break
+            extra += 1
+    return extra > SHOULDER
+
+
+def road_slice(reader, y, t, away, acrosses, along_x):
+    """The slice at `t` if it is finished carriageway, else None.
+
+    Solid ground is not road, and this is the whole difficulty. A hillside, a beach and
+    a field are every bit as solid and continuous as a carriageway. The first version
+    of this tool tested only for solid, and asked to carry a road on from the mouth of
+    a tunnel it took the rock face in front of it for road and offered to clone stone,
+    dirt and sand the whole way to the coast.
+
+    Two things separate them, and one alone is not enough. A road stops dead at its
+    edges: the carriageway at the end of this one is bounded by stone on both sides at
+    exactly its own width. Natural ground does not, though it is patchier than it
+    looks — a band of stone happened to run five blocks past the strip and no further,
+    which a generous tolerance waved through. So the width has to match almost exactly,
+    not roughly. A road is also built, so the same slice repeats along its length far
+    beyond anything natural ground holds for.
+
+    Ground has to fail both tests to be taken for road. Loosen either one and it does.
+    """
+    names = slice_names(reader, y, t, acrosses, along_x)
+    if not names:
+        return None
+    if spreads_across(reader, y, t, acrosses, along_x, set(names)):
+        return None
+    for i in range(1, RUN + 1):
+        if slice_names(reader, y, t + away * i, acrosses, along_x) != names:
+            return None
+    return names
+
+
+def find_source(reader, y, lo, hi, acrosses, along_x, reach):
+    """The nearest finished slice of road beyond either end of the strip.
+
+    Returns (t, names, side) or None. Both ends are tried because a strip may be an
+    extension off one end of a road or a gap punched in the middle of one. The run of
+    matching slices is read away from the strip, into road that is certainly finished,
+    never back across the part being paved.
+    """
+    for i in range(1, reach + 1):
+        for t, away, side in ((lo - i, -1, "behind"), (hi + i, +1, "ahead")):
+            names = road_slice(reader, y, t, away, acrosses, along_x)
+            if names:
+                return t, names, side
+    return None
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    dimension = take("--dimension", str, "minecraft:overworld")
+    height = take("--height", int, 3)
+    fill = take("--fill", str, "minecraft:stone")
+    sample_len = take("--sample", int, SAMPLE)
+    no_fill = "--no-fill" in args
+    dry = "--dry-run" in args
+    nums = [a for a in args if not a.startswith("--")]
+    if len(nums) != 5:
+        sys.exit(__doc__)
+    try:
+        y, x1, z1, x2, z2 = (int(v) for v in nums)
+    except ValueError:
+        sys.exit("all five values must be whole numbers")
+    if height < 0:
+        sys.exit("--height cannot be negative")
+    x1, x2 = sorted((x1, x2))
+    z1, z2 = sorted((z1, z2))
+
+    # The road runs the long way down the strip, as in mcrepave. A square strip says
+    # nothing either way and x is as good a guess as any.
+    along_x = (x2 - x1) >= (z2 - z1)
+    lo, hi = (x1, x2) if along_x else (z1, z2)
+    acrosses = list(range(z1, z2 + 1) if along_x else range(x1, x2 + 1))
+
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+
+        found = find_source(reader, y, lo, hi, acrosses, along_x, sample_len)
+        if not found:
+            sys.exit(
+                f"refusing: no finished road within {sample_len} blocks of either end "
+                f"of this strip at y={y}, so there is nothing to say what the "
+                f"carriageway should be. A slice counts as road only if it is solid "
+                f"right across and no more than {SHOULDER} blocks wider than this "
+                f"strip; solid ground that carries on across is a hillside, not a "
+                f"road. Check the level — the carriageway is one below the markings — "
+                f"and that the strip lines up with the road.")
+        src, names, side = found
+        kinds = Counter(names)
+        print(f"copying the slice at {'x' if along_x else 'z'}={src} "
+              f"({side} the strip): "
+              f"{', '.join(f'{n.split(chr(58))[-1]}x{c}' for n, c in kinds.items())}")
+        print(f"road runs along {'x' if along_x else 'z'}, "
+              f"{len(acrosses)} block(s) wide")
+        print(f"paving {'x' if along_x else 'z'} {lo}..{hi} at y={y} "
+              f"— {(hi - lo + 1) * len(acrosses)} block(s)")
+
+        envelope = set()
+        if height and not no_fill:
+            for t in range(lo, hi + 1):
+                for across in acrosses:
+                    x, z = at(t, across, along_x)
+                    for yy in range(y + 1, y + height + 1):
+                        if region.passable(reader.block(x, yy, z)):
+                            envelope.add((x, yy, z))
+            print(f"{len(envelope)} block(s) of water or air over the new road will "
+                  f"become {fill}, so a bore can cut and line the crossing")
+
+        if dry:
+            a1, a2 = acrosses[0], acrosses[-1]
+            sx1, sz1 = at(src, a1, along_x)
+            print(f"  would clone {sx1} {y} {sz1} .. "
+                  f"{at(src, a2, along_x)[0]} {y} {at(src, a2, along_x)[1]} "
+                  f"onto each of {hi - lo + 1} slice(s)")
+            return
+
+        ctx = f"execute in {dimension} run "
+        pad = sample_len + 2
+        load = (x1 - pad, z1 - pad, x2 + pad, z2 + pad)
+        laid = 0
+        with Rcon() as rcon:
+            rcon.command(f"{ctx}forceload add {load[0]} {load[1]} {load[2]} {load[3]}")
+            try:
+                import time
+                time.sleep(SETTLE)
+                a1, a2 = acrosses[0], acrosses[-1]
+                sx1, sz1 = at(src, a1, along_x)
+                sx2, sz2 = at(src, a2, along_x)
+                for t in range(lo, hi + 1):
+                    dx1, dz1 = at(t, a1, along_x)
+                    # clone, not fill: the carriageway comes across exactly as it is,
+                    # kerbs, block states and all, without anything here naming it.
+                    out = rcon.command(f"{ctx}clone {sx1} {y} {sz1} {sx2} {y} {sz2} "
+                                       f"{dx1} {y} {dz1}")
+                    if "cloned" in out.lower():
+                        laid += 1
+            finally:
+                rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
+                             f"{load[2]} {load[3]}")
+        print(f"laid {laid} of {hi - lo + 1} slice(s)")
+
+        if envelope:
+            with Rcon() as rcon:
+                changed = builder.write(rcon, dimension, envelope, fill)
+            print(f"filled {changed} block(s) over the new road with {fill}")
+
+        if laid < hi - lo + 1:
+            sys.exit(f"{hi - lo + 1 - laid} slice(s) would not take the clone. The road "
+                     f"is part laid; re-run once you know why.")
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except ValueError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

@@ -34,6 +34,12 @@ entrance and the last as the far side — so an entrance right in front of the p
 found by the same pass that finds the exit. Reading the world files makes that scan
 cost hundredths of a second.
 
+When it is following a road it stops where the road stops. A hill and the road running
+into it are different things, and looking only for solid rock cannot tell them apart:
+one run carried on 73 blocks out the far side of the carriageway, leaving lined tunnel
+with nothing to drive on. Boring with no road at all is unchanged and still unbounded —
+that is what --no-align and explicit coordinates are for.
+
 Blocks are read from the last save and written over RCON, as everywhere else.
 """
 import math
@@ -213,7 +219,9 @@ def find_road(reader, seed, floor_y, width):
 
     The road does not move. Its surface is a run of one block a few wide and much
     longer than it is wide, which gives the centre line and the direction it travels
-    without asking anybody. Returns (x, z, axis) or None if there is no road here.
+    without asking anybody. Returns (x, z, axis, surface) or None if there is no road
+    here; the surface is what the carriageway is paved with, which is how far ahead it
+    still counts as road.
     """
     sx, sz = seed
     for dx, dz in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0),
@@ -232,9 +240,31 @@ def find_road(reader, seed, floor_y, width):
         if not (width <= across <= width + 6):
             continue                       # not a corridor the size of this tunnel
         if axis == "x":
-            return x, z + (zlo + zhi) // 2, "x"
-        return x + (xlo + xhi) // 2, z, "z"
+            return x, z + (zlo + zhi) // 2, "x", surface
+        return x + (xlo + xhi) // 2, z, "z", surface
     return None
+
+
+def road_end(reader, start, facing, floor_y, surface, limit):
+    """The last step ahead that still has carriageway under it.
+
+    A road and the hill it runs into are two different things, and a bore that only
+    looks for solid rock cannot tell them apart. Asked to cut through a hill, it kept
+    going out the far side of the road and 73 blocks on into open ground, leaving a
+    lined tunnel with nothing to drive on.
+
+    The carriageway is the row under the tunnel floor, so following it costs one read
+    per step. Where it stops, the job stops: past that point there is no road to carry
+    through, and boring further only makes a hole that has to be paved later.
+    """
+    dx, dz = FACINGS[facing]
+    x0, z0 = start
+    last = -1
+    for step in range(limit + 1):
+        if reader.block(x0 + dx * step, floor_y - 1, z0 + dz * step) != surface:
+            break
+        last = step
+    return last
 
 
 def facing_along(axis: str, yaw: float) -> str:
@@ -323,6 +353,7 @@ def main() -> None:
         reader = region.Reader(dimension)
         reader.flush()
 
+        surface = None
         if player and not no_align:
             found = find_road(reader, start, floor_y, width)
             if not found:
@@ -331,15 +362,24 @@ def main() -> None:
                     f"A player's position only says roughly where they mean, so this "
                     f"will not bore from it blindly — give explicit coordinates and "
                     f"--facing, or stand on the road.")
-            rx, rz, axis = found
+            rx, rz, axis, surface = found
             was, start, facing = start, (rx, rz), facing_along(axis, yaw)
             if (rx, rz) != was:
                 print(f"road found: centred at {rx} {floor_y} {rz}, running along "
                       f"{axis} (you were at {was[0]} {was[1]})")
 
-        first, last = find_mass(reader, start, facing, half, height, floor_y, limit)
+        # Following a road means going no further than the road goes. Boring with no
+        # road is still unbounded: --no-align and explicit coordinates cut through
+        # whatever is in the way, which is what they are for.
+        road_last = None
+        scan = limit
+        if surface:
+            road_last = road_end(reader, start, facing, floor_y, surface, limit)
+            scan = min(limit, road_last)
+
+        first, last = find_mass(reader, start, facing, half, height, floor_y, scan)
         if first is None:
-            sys.exit(f"nothing to bore through: clear for {limit} blocks {facing} "
+            sys.exit(f"nothing to bore through: clear for {scan} blocks {facing} "
                      f"from {start[0]} {floor_y} {start[1]}")
 
         length = last - first + 1
@@ -349,7 +389,13 @@ def main() -> None:
               f"{width} wide, {height} high")
         print(f"tunnel: x {inside[0]}..{inside[3]}  y {inside[1]}..{inside[4]}  "
               f"z {inside[2]}..{inside[5]}")
-        if last >= limit:
+        if road_last is not None and road_last < limit and last >= road_last:
+            dx_, dz_ = FACINGS[facing]
+            ex, ez = start[0] + dx_ * road_last, start[1] + dz_ * road_last
+            print(f"stopped at the end of the {surface}: it runs out at {ex} "
+                  f"{floor_y - 1} {ez}, {road_last} blocks ahead. Pave further to bore "
+                  f"further.", file=sys.stderr)
+        elif last >= limit:
             print(f"warning: still solid at the {limit}-block limit — raise --max",
                   file=sys.stderr)
         ctx = f"execute in {dimension} run "
