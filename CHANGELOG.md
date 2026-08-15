@@ -5,6 +5,47 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.17.0 — Minecraft 26.2 (NeoForge)
+
+**The prompt told the assistant that its own reply text reached nobody, that the server
+rejected a message over 256 characters, and — in a sentence cut off mid-clause by an old
+edit — left `<role>` open across the whole speaking section.** None of the three were true
+of the code they described. The assistant was being briefed against a system that had moved
+on, and the rules it needed most were the ones stated three times in three places.
+
+- `minecraft-computer.md` is restructured into operating rules followed by a tool
+  reference, ordered the way a turn needs them rather than the order they were written in.
+  Every rule survives; nothing about how the world is edited changed. Silence had three
+  homes, length two, and "do not narrate" two — each now has one.
+- The claim that a reply reaching only the log meant silence for the player was wrong: the
+  daemon relays it. The rule now says what the fallback costs — it arrives after the turn
+  ends, cut short, and always to everyone — which is the actual reason to run `compsay`.
+- The 256-character limit does not exist. `compsay` splits long text on word boundaries, so
+  a long reply is never rejected; it just arrives as a wall of chat.
+- The progress rules contradicted each other. "Acknowledge first" and "do not post 'working
+  on it' between tool calls" were both true and neither said why. They are now one section
+  that divides the work: the assistant covers the first fifteen seconds with one line and
+  names the job with `mcdoing`, and the automatic updates take it from there. Without
+  `mcdoing` those updates say "searching for that block", which is what a player who asked
+  for a tunnel used to be told.
+- A player who repeats a request already in progress is now told it is still running.
+  Repeating interrupts the turn, so the previous behaviour was to start the job again while
+  the first attempt was still going.
+- The admin's name and the local lore are substituted into the sections that govern them
+  rather than appended after everything else. The name used to sit 25k characters after
+  `<authority>`, which pointed forward at "the note appended below". The daemon refuses to
+  start if the prompt has no `{{ADMIN}}` slot, and warns if lore exists with nowhere to go.
+- Turn prompts put the long material first and the instruction last. The rolled-up history
+  used to arrive after the instruction. The closing line now covers held messages as well:
+  "do nothing at all" sat directly beneath a memory block saying "act on these now", and on
+  a turn where nobody addressed the assistant the message it was holding could go undeliv-
+  ered.
+- `[no response]` is matched after stripping whitespace, case and a trailing full stop. An
+  exact comparison meant one stray character pushed a deliberate non-reply to every player.
+- Effort raised from `low` to `medium`. Low scopes work to exactly what was asked, which is
+  the wrong trade for edits where being wrong means undoing them. `MCBOT_EFFORT` still
+  overrides; check `mchealth` reports medium after deploying.
+
 ## 0.16.0 — Minecraft 26.2 (NeoForge)
 
 **A bore following a road ran 73 blocks out the far end of it, because it was looking for

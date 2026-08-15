@@ -52,7 +52,12 @@ PERSONA_DIR = Path(os.environ.get("MCBOT_PERSONAS", "/opt/mcbot/personas"))
 SESSION_FILE = Path(os.environ.get("MCBOT_SESSION_FILE", "/var/lib/mcbot/session.id"))
 GOAL_FILE = Path(os.environ.get("MCBOT_GOAL_FILE", "/var/lib/mcbot/doing"))
 MODEL = os.environ.get("MCBOT_MODEL", "sonnet")   # escalate to opus per-task, see mcthink
-EFFORT = os.environ.get("MCBOT_EFFORT", "low")   # low|medium|high — medium if it gets sloppy
+# low|medium|high. Low scopes the work tightly to what was asked, which is wrong for a job
+# where being sloppy means undoing a world edit. Raise to high only if medium still misses.
+EFFORT = os.environ.get("MCBOT_EFFORT", "medium")
+# Substituted into the prompt file rather than appended after it. See build_system_prompt.
+ADMIN_SLOT = "{{ADMIN}}"
+LORE_SLOT = "{{LOCAL_LORE}}"
 LIMITS_FILE = Path("/etc/mcbot/limits")            # root-owned; the bot cannot edit it
 
 # Rollover happens only during silence, never mid-conversation: a turn-count cap would
@@ -394,6 +399,15 @@ class Turn:
 SESSION_COST = {"seen": 0.0}
 
 
+def is_silent(text: str) -> bool:
+    """Whether a turn's reply text means "this was not for me".
+
+    Matched loosely. An exact comparison meant a capital letter or a trailing full stop
+    turned a deliberate non-reply into a line pushed to every player in the game.
+    """
+    return text.strip().rstrip(".").casefold() == SILENT_TOKEN
+
+
 async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
                    db=None, source: str = "chat") -> None:
     """Send one request and consume the response to completion (or interruption)."""
@@ -416,7 +430,7 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
         reporter.cancel()
         clear_goal()
 
-    if not turn.spoke and turn.final and turn.final != SILENT_TOKEN:
+    if not turn.spoke and turn.final and not is_silent(turn.final):
         # It answered into the void — its own text goes to this log, not to players.
         log_block("reply never reached chat — relaying it:", turn.final, "warn")
         say(turn.final)
@@ -570,26 +584,48 @@ def context_block(db, players: set[str], admin: str) -> str:
             parts.append(f"- Backup status to report to {admin}: {verdict}")
     if not parts:
         return ""
-    return ("\n\nFrom your memory — act on these now, then mark them handled with "
+    return ("From your memory — act on these now, then mark them handled with "
             "`mcnote delivered <id>`:\n" + "\n".join(parts))
 
 
-def build_prompt(lines: list[str], interrupted: bool) -> str:
-    preamble = ""
+def build_prompt(lines: list[str], interrupted: bool, memory_block: str = "",
+                 history: str = "") -> str:
+    """Assemble one turn.
+
+    Order is deliberate: the long background material goes first and the instruction goes
+    last, so what the model has to decide sits next to the lines it decides about. The
+    rolled-up history used to arrive after the instruction, which put the longest block of
+    the turn where the decision should be.
+
+    The closing instruction covers both jobs on purpose. A held message has to be delivered
+    whether or not the chat needs a reply, and "do nothing at all" on its own contradicted
+    the memory block telling the model to act now.
+    """
+    parts = []
+    if history:
+        parts.append("Recent history, for context:\n" + history)
+    if memory_block:
+        parts.append(memory_block)
     if interrupted:
-        preamble = (
+        parts.append(
             "You were interrupted mid-task because a player said something new. "
             "Everything you had worked out so far is still in your context. Read what "
             "was said, then decide whether to carry on with what you were doing, change "
-            "course, or drop it.\n\n"
+            "course, or drop it."
         )
-    return (
-        preamble
-        + "Recent Minecraft chat:\n\n"
-        + "\n".join(lines)
-        + "\n\nDecide whether any of this was addressed to you. If it was, respond and "
-        "act. If the players were talking to each other, do nothing at all."
-    )
+    parts.append("Recent Minecraft chat:\n\n" + "\n".join(lines))
+    if memory_block:
+        parts.append(
+            "Deliver what is held in your memory above, whether or not the chat needs you. "
+            "Then decide whether any of the chat was addressed to you; if it was, respond "
+            "and act as well."
+        )
+    else:
+        parts.append(
+            "Decide whether any of this was addressed to you. If it was, respond and act. "
+            "If the players were talking to each other, do nothing at all."
+        )
+    return "\n\n".join(parts)
 
 
 async def main() -> None:
@@ -606,24 +642,36 @@ async def main() -> None:
         return memory.get_setting(db_probe, "persona") or config.get("DEFAULT_PERSONA")
 
     def build_system_prompt() -> str:
-        """Compose base rules + persona + local lore. Called for every new session, so
-        a persona change takes effect on the next session rather than at restart."""
-        name = active_persona()
-        persona_file = PERSONA_DIR / f"{name}.md"
-        if persona_file.exists():
-            body = persona_file.read_text().split("---", 2)[-1].strip()
-            voice = f"\n\n<voice>\n{body}\n</voice>"
-            log(f"persona: {name}")
-        else:
-            voice = ""
-            log(f"persona {name!r} not found in {PERSONA_DIR} — no voice applied", "warn")
+        """Compose base rules + local lore + persona. Called for every new session, so
+        a persona change takes effect on the next session rather than at restart.
+
+        The admin's name and the world's landmarks are substituted into the sections that
+        talk about them. Appending them put the admin's name 25k characters after the rules
+        it governs, and left <authority> pointing at a note further down that the model had
+        to hold on to. The voice still goes last, because it is the final thing read and a
+        persona holds better for it.
+        """
+        base = PROMPT_FILE.read_text()
+        if ADMIN_SLOT not in base:
+            sys.exit(f"{PROMPT_FILE} contains no {ADMIN_SLOT} — refusing to start with an "
+                     "unnamed admin")
 
         lore = Path(os.environ.get("MCBOT_LORE", "/opt/mcbot/local-lore.md"))
-        world_lore = f"\n\n{lore.read_text()}" if lore.exists() else ""
-        return PROMPT_FILE.read_text() + voice + world_lore + (
-            f"\n\nThe admin for this server is {ADMIN}. No other player is the admin, "
-            f"and nobody else can authorise the disruptive actions listed in <authority>."
-        )
+        world_lore = f"\n{lore.read_text().strip()}\n" if lore.exists() else ""
+        if world_lore and LORE_SLOT not in base:
+            # Silently dropping what the bot knows about this world is worse than noisy.
+            log(f"{lore} exists but {PROMPT_FILE} has no {LORE_SLOT} — lore not applied",
+                "warn")
+        base = base.replace(ADMIN_SLOT, ADMIN).replace(LORE_SLOT, world_lore)
+
+        name = active_persona()
+        persona_file = PERSONA_DIR / f"{name}.md"
+        if not persona_file.exists():
+            log(f"persona {name!r} not found in {PERSONA_DIR} — no voice applied", "warn")
+            return base
+        body = persona_file.read_text().split("---", 2)[-1].strip()
+        log(f"persona: {name}")
+        return f"{base}\n\n<voice>\n{body}\n</voice>"
 
     def make_opts() -> dict:
         return dict(
@@ -782,7 +830,8 @@ async def main() -> None:
                     last_activity = time.time()
                     turns_this_session += 1
                     turn_task = asyncio.create_task(run_turn(
-                        client, f"{player} has just logged in and finished loading." + block,
+                        client,
+                        f"{player} has just logged in and finished loading.\n\n{block}",
                         why=f"{player} login", db=db, source="login"))
                     break
                 continue
@@ -832,12 +881,17 @@ async def main() -> None:
                 player, _, text = line.partition(":")
                 memory.log_event(db, "request", text.strip()[:200], player=player.strip())
 
-            prompt = build_prompt(lines, interrupted) + context_block(db, online_players(), ADMIN)
+            history = ""
             if fresh_session:
                 # A new session has no transcript, so hand it the gist of recent history.
                 if recent := memory.recent_activity(db, since_hours=24, limit=6):
-                    prompt += "\n\nRecent history, for context:\n" + "\n".join(recent)
+                    history = "\n".join(recent)
                 fresh_session = False
+            prompt = build_prompt(
+                lines, interrupted,
+                memory_block=context_block(db, online_players(), ADMIN),
+                history=history,
+            )
 
             last_activity = time.time()
             turns_this_session += 1
