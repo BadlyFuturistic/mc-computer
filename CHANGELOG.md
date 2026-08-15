@@ -5,6 +5,23 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.12.0 — Minecraft 26.2 (NeoForge)
+
+**Teleporting resolves the destination itself.** `mctp` took coordinates only, so the
+caller had to work out where "the surface" or "where Lucas is" actually was. Asked to put a
+player on the surface above them, the assistant guessed a height and teleported to find
+out — four times, throwing the player from y=320 to y=63 to discover the ground.
+
+- `--surface`, `--to <player>`, `--place "<name>"`, `--up <n>`, `--down <n>`. Each resolves
+  at the moment of use, so a player's position cannot be stale by the time it is used.
+- `--dry-run` reports the landing spot without moving anyone.
+- **A rider is moved with their vehicle.** Teleporting a player dismounts them and strands
+  the vehicle where it was. The vehicle is tagged through `on vehicle`, moved, and remounted.
+- The column search reads the world files instead of firing ~97 RCON probes per call, and
+  generates the chunk first when the destination has never been visited.
+- Documented, in the tool and the prompt: **`~` does not work over RCON.** It resolves
+  against the world spawn, not the player, so `tp <player> ~ ~1 ~` sends them to spawn.
+
 ## 0.11.1 — Minecraft 26.2 (NeoForge)
 
 **`mcbore` destroyed the road it was tunnelling for, and sealed both ends of the tunnel.**

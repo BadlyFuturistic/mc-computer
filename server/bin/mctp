@@ -1,92 +1,211 @@
 #!/usr/bin/env python3
-"""mctp — teleport a player to a location, landing them somewhere they can stand.
+"""mctp — move a player somewhere they can actually stand.
 
-  mctp <player> <x> <y> <z> [dimension]
+  mctp <player> <x> <y> <z> [dimension]     an explicit place
+  mctp <player> --to <other>                wherever another player is, right now
+  mctp <player> --surface                   the open sky above where they are
+  mctp <player> --up <n> | --down <n>       straight up or down from where they are
+  mctp <player> --place "<name>"            a waystone or waypoint, by name
 
-Never drops anyone inside a wall. Force-loads the destination, searches the column for
-a spot with two blocks of headroom over solid ground (no lava, no water), teleports to
-the candidate nearest the requested height, then releases the chunk.
+  --keep-vehicle     leave the vehicle behind (by default it comes too)
+  --dry-run          say where they would land, move nothing
+  --dimension <dim>  default minecraft:overworld
 
-Exits non-zero with a plain-English reason if there is nowhere safe to stand, so the
-caller can tell the player instead of burying them.
+Every form lands on real footing: solid ground underfoot, two blocks of air to stand
+in, never lava, water, leaves or fire. If there is nowhere safe it says so and moves
+nobody, rather than burying them in stone.
+
+The destination forms exist because working them out is exactly where this goes wrong.
+Asked to put someone "on the surface", a caller with only coordinates has to guess a
+height and teleport to find out — which is four teleports and a very confused player,
+and has happened. Asked to move someone "to Lucas", it has to read a position that is
+out of date the moment it is read. Both are one flag here, resolved at the moment of
+use.
+
+**Relative coordinates are not usable over RCON.** `~` resolves against the command
+source, which for RCON is the world spawn, not the player — so `tp <player> ~ ~1 ~`
+sends them to spawn, not one block up. That is what --up and --down are for.
+
+A rider is moved with whatever they are riding. Teleporting a player out of their car
+dismounts them and leaves the car behind, possibly a thousand blocks away.
 """
 import re
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, "/opt/mc")
-from mcrcon import Rcon
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
 
-SEARCH = 48   # how far above and below the requested Y to look
+SEARCH = 48           # how far above and below a requested height to look
+SETTLE = 0.6
+TAG = "mctp_vehicle"
+
+# Solid enough to stand on. Passable blocks are not footing, and these are not either:
+# they either hurt, or give way, or are not really there.
+UNSAFE_FOOTING = ("lava", "water", "fire", "magma_block", "campfire", "cactus",
+                  "powder_snow", "sweet_berry_bush", "wither_rose")
 
 
-def rcon(*cmds: str) -> list[str]:
-    """Run commands over one RCON connection; return their outputs in order."""
-    with Rcon() as conn:
-        out = []
-        for c in cmds:
-            out.extend(conn.command(c).splitlines() or [""])
-        return [ln.strip() for ln in out]
+def cmd(*lines: str) -> str:
+    return subprocess.run(["/opt/mc/mccmd"], input="\n".join(lines) + "\n",
+                          capture_output=True, text=True).stdout
 
 
-def main():
-    if len(sys.argv) < 5:
-        sys.exit("usage: mctp <player> <x> <y> <z> [dimension]")
-    player, x, y, z = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-    dim = sys.argv[5] if len(sys.argv) > 5 else "minecraft:overworld"
-    if ":" not in dim:
-        dim = f"minecraft:{dim}"
-    ctx = f"execute in {dim} run"
+def player_pos(name: str):
+    out = cmd(f"data get entity {name} Pos")
+    m = re.search(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]", out)
+    if not m:
+        sys.exit(f"{name} is not online, or has no position")
+    x, y, z = (float(v) for v in m.groups())
+    return x, y, z
 
-    rcon(f"{ctx} forceload add {x} {z}")
-    time.sleep(0.6)   # a force-loaded chunk is not probeable for a tick or two
+
+def footing(name: str | None) -> bool:
+    if name is None or region.passable(name):
+        return False
+    short = name.split(":", 1)[-1]
+    return not (short.endswith("leaves") or any(u in short for u in UNSAFE_FOOTING))
+
+
+def standable(reader, x: int, y: int, z: int) -> bool:
+    """Solid underfoot, and room for a player to occupy y and y+1."""
+    return (footing(reader.block(x, y - 1, z))
+            and region.passable(reader.block(x, y, z))
+            and region.passable(reader.block(x, y + 1, z)))
+
+
+def ensure_generated(reader, x: int, z: int, dimension: str) -> None:
+    """Make the server generate a column we have no data for, then re-read it.
+
+    A destination that has never been visited is simply absent from the world files.
+    Force-loading it makes the server create it; the flush puts it on disk where it
+    can be read.
+    """
+    if any(reader.block(x, y, z) is not None for y in range(-60, 320, 16)):
+        return
+    with Rcon() as rcon:
+        ctx = f"execute in {dimension} run "
+        rcon.command(f"{ctx}forceload add {x} {z}")
+        try:
+            time.sleep(SETTLE)
+            rcon.command("save-all flush")
+        finally:
+            rcon.command(f"{ctx}forceload remove {x} {z}")
+    reader.reset()
+
+
+def pick_height(reader, x: int, z: int, want: int | None):
+    """Where to land. With no height asked for, the open surface; otherwise nearest
+    at or above what was asked, because a stored height usually sits below the real
+    ground and choosing the nearest lands in the cave under it."""
+    if want is None:
+        for y in range(319, -63, -1):
+            if standable(reader, x, y, z):
+                return y
+        return None
+    options = [y for y in range(max(-63, want - SEARCH), min(319, want + SEARCH) + 1)
+               if standable(reader, x, y, z)]
+    if not options:
+        return None
+    above = [y for y in options if y >= want]
+    return min(above) if above else max(options)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    to_player = take("--to")
+    place = take("--place")
+    up = take("--up", int)
+    down = take("--down", int)
+    dimension = take("--dimension")
+    surface = "--surface" in args
+    keep_vehicle = "--keep-vehicle" in args
+    dry = "--dry-run" in args
+    args = [a for a in args if not a.startswith("--")]
+
+    if not args:
+        sys.exit(__doc__)
+    player, rest = args[0], args[1:]
+    dimension = dimension or (rest[4] if len(rest) > 3 else "minecraft:overworld")
+    if ":" not in dimension:
+        dimension = f"minecraft:{dimension}"
+
+    want = None
     try:
-        # One probe per candidate height: standable means air at Y and Y+1, something
-        # solid but not liquid at Y-1. Each hit drops a marker we can read back.
-        probes = []
-        for cy in range(y + SEARCH, y - SEARCH - 1, -1):
-            if not (-64 < cy < 320):
-                continue
-            probes.append(
-                f"{ctx} execute if block {x} {cy} {z} minecraft:air"
-                f" if block {x} {cy + 1} {z} minecraft:air"
-                f" if block {x} {cy + 2} {z} minecraft:air"
-                f" unless block {x} {cy - 1} {z} minecraft:air"
-                f" unless block {x} {cy - 1} {z} minecraft:lava"
-                f" unless block {x} {cy - 1} {z} minecraft:water"
-                f" unless block {x} {cy - 1} {z} #minecraft:leaves"
-                f" unless block {x} {cy - 1} {z} #minecraft:fire"
-                f" run summon marker {x} {cy} {z} {{Tags:[\"tpprobe\"]}}"
-            )
-        rcon(*probes)
+        if to_player:
+            tx, ty, tz = player_pos(to_player)
+            x, z, want = round(tx), round(tz), round(ty)
+        elif place:
+            out = subprocess.run(["/opt/mc/mcwhere", place], capture_output=True,
+                                 text=True).stdout
+            m = re.search(r"(-?\d+)[ ,]+(-?\d+)[ ,]+(-?\d+)", out)
+            if not m:
+                sys.exit(f"no place matching '{place}' — try mcwhere to see the names")
+            x, want, z = (int(v) for v in m.groups())
+        elif surface or up or down:
+            px, py, pz = player_pos(player)
+            x, z = round(px), round(pz)
+            want = None if surface else round(py) + (up or 0) - (down or 0)
+        else:
+            if len(rest) < 3:
+                sys.exit(__doc__)
+            x, want, z = int(rest[0]), int(rest[1]), int(rest[2])
+    except ValueError:
+        sys.exit("coordinates must be whole numbers")
 
-        out = rcon(f"{ctx} execute as @e[tag=tpprobe] run data get entity @s Pos")
-        ys = []
-        for line in out:
-            m = re.search(r"\[.*?d,\s*(-?[\d.]+)d,", line)
-            if m:
-                ys.append(int(float(m.group(1))))
-        rcon("kill @e[tag=tpprobe]")
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+        ensure_generated(reader, x, z, dimension)
 
-        if not ys:
-            sys.exit(
-                f"no safe footing within {SEARCH} blocks of y={y} at {x},{z} "
-                f"in {dim.split(':')[-1]} — nothing was moved"
-            )
+        best = pick_height(reader, x, z, want)
+        if best is None:
+            where = f"y={want}" if want is not None else "anywhere in that column"
+            sys.exit(f"nowhere safe to stand at {x},{z} near {where} in "
+                     f"{dimension.split(':')[-1]} — nobody was moved")
 
-        # Bias upward. A stored location's height is usually below the real surface, and
-        # picking the nearest candidate then lands in a cave under it. Prefer the lowest
-        # spot at or above what was asked for; only drop below if there is nothing above.
-        at_or_above = [cy for cy in ys if cy >= y]
-        best = min(at_or_above) if at_or_above else max(ys)
-        res = rcon(f"{ctx} tp {player} {x + 0.5} {best} {z + 0.5}")
-        joined = " ".join(res).lower()
-        if "no entity" in joined or "no player" in joined or "not found" in joined:
-            sys.exit(f"safe spot found at y={best}, but no player named {player} is online")
-        note = "" if best == y else f" (adjusted from y={y})"
-        print(f"{player} -> {x} {best} {z} in {dim.split(':')[-1]}{note}")
-    finally:
-        rcon(f"{ctx} forceload remove {x} {z}")
+        note = "" if want in (None, best) else f" (asked for y={want})"
+        if dry:
+            print(f"{player} would land at {x} {best} {z}{note}")
+            return
+
+        ctx = f"execute in {dimension} run "
+        with Rcon() as rcon:
+            # Tag whatever they are riding before moving them: teleporting a rider
+            # dismounts them, and without this the vehicle is left behind.
+            riding = False
+            if not keep_vehicle:
+                rcon.command(f"execute as {player} on vehicle run tag @s add {TAG}")
+                riding = bool(rcon.command(f"execute if entity @e[tag={TAG}] run list").strip())
+
+            out = rcon.command(f"{ctx}tp {player} {x + 0.5} {best} {z + 0.5}")
+            if any(s in out.lower() for s in ("no entity", "no player", "not found")):
+                rcon.command(f"tag @e[tag={TAG}] remove {TAG}")
+                sys.exit(f"safe spot found at y={best}, but {player} is not online")
+
+            if riding:
+                rcon.command(f"{ctx}tp @e[tag={TAG}] {x + 0.5} {best} {z + 0.5}")
+                rcon.command(f"ride {player} mount @e[tag={TAG},limit=1]")
+                rcon.command(f"tag @e[tag={TAG}] remove {TAG}")
+
+        print(f"{player} -> {x} {best} {z} in {dimension.split(':')[-1]}{note}"
+              + (" (vehicle brought along)" if riding else ""))
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
 
 
 if __name__ == "__main__":

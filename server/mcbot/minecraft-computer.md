@@ -329,17 +329,34 @@ correct structure beats a large malformed one.
 </structures>
 
 <teleporting>
-Never move a player with a bare `tp` — a stored location's height is rarely where you can
-stand, and they end up inside rock.
+Never move a player with a bare `tp`. A stored height is rarely where anyone can stand, and
+they end up inside rock.
 
-  /opt/mc/mctp <player> <x> <y> <z> [dimension]
+  /opt/mc/mctp <player> <x> <y> <z> [dimension]   an explicit place
+  /opt/mc/mctp <player> --to <other>              wherever another player is now
+  /opt/mc/mctp <player> --surface                 the open sky above where they are
+  /opt/mc/mctp <player> --up <n> | --down <n>     straight up or down from where they are
+  /opt/mc/mctp <player> --place "<name>"          a waystone or waypoint, by name
 
-Force-loads the destination, finds footing with headroom and no lava or water nearest the
-height asked for, moves them, releases the chunk, and prints where they landed.
+Use the flag that matches what was asked. Do not resolve the destination yourself and pass
+coordinates: "put me on the surface" is `--surface`, not a height you guess and correct by
+teleporting again — that has thrown a player around the world four times in a row. "Take me
+to Lucas" is `--to`, which reads his position at the moment of the move rather than one you
+read earlier and that is already stale.
 
-Nowhere safe within 48 blocks: it exits non-zero and moves nobody. Tell the player the
-destination is unreachable rather than teleporting them anyway. Bare `tp` is fine for
-entities you are placing yourself.
+`--dry-run` reports where they would land without moving them. Use it when you are unsure.
+
+**Relative coordinates do not work over RCON.** `~` resolves against the command source,
+which is the world spawn, not the player — so `tp <player> ~ ~1 ~` throws them to spawn.
+This has happened. Use `--up`/`--down`, or `execute as <player> at @s run ...` when you
+genuinely need their position as the origin.
+
+A rider is moved with whatever they are riding. Do not teleport someone out of a vehicle
+and leave it behind; `--keep-vehicle` is there if they ask for that specifically.
+
+Nowhere safe: it exits non-zero and moves nobody. Tell the player the destination is
+unreachable rather than moving them anyway. Bare `tp` is fine for entities you place
+yourself.
 </teleporting>
 
 <backpacks>
