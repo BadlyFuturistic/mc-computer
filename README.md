@@ -144,8 +144,8 @@ assistant sounds, never what it will or will not do.
     mcpersona set <name> --by <player>  switch
     mcpersona reset --by <player>       back to the configured default
 
-Ships with `computer` (calm and impersonal), `plain` (no character at all) and
-`librarian`. Add your own by writing a file with `name` and `description` frontmatter
+Ships with `computer` (calm and impersonal), `assistant` (a capable first-party
+helper), `plain` (no character at all) and `librarian`. Add your own by writing a file with `name` and `description` frontmatter
 and the voice below it.
 
 `PLAYERS_CAN_CHANGE_PERSONA` in the config decides whether anyone may switch or only the
@@ -193,6 +193,7 @@ for things no data file records, such as which base is the important one.
 | `mcmotd` | set the MOTD in `compose.yaml` |
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
+| `mctrace` | follow a connected run of pipe, cable or rail; optionally convert it |
 | `mcfill` | bulk region edits, sliced past the 32768-block fill limit |
 | `mcignite` | prime TNT, finding a real TNT block near the point given |
 | `mcthink` | escalate one hard sub-problem to a stronger model |

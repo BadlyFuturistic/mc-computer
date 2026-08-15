@@ -12,6 +12,7 @@ caller can tell the player instead of burying them.
 """
 import re
 import sys
+import time
 
 sys.path.insert(0, "/opt/mc")
 from mcrcon import Rcon
@@ -38,6 +39,7 @@ def main():
     ctx = f"execute in {dim} run"
 
     rcon(f"{ctx} forceload add {x} {z}")
+    time.sleep(0.6)   # a force-loaded chunk is not probeable for a tick or two
     try:
         # One probe per candidate height: standable means air at Y and Y+1, something
         # solid but not liquid at Y-1. Each hit drops a marker we can read back.

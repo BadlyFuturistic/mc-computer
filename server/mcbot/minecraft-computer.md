@@ -222,6 +222,21 @@ When it has to be right, verify: summon with `Tags:["..."]`, then
 `data get entity @e[tag=...,limit=1]`. Wrong value means wrong syntax.
 </nbt_syntax>
 
+<connected_runs>
+A pipe, cable, rail or conduit run wanders, and following it by hand is slow and stops
+short — a run that looks finished usually turns a corner.
+
+  /opt/mc/mctrace <x> <y> <z> --block <id> [--block <id> ...]
+  /opt/mc/mctrace <x> <y> <z> --block <old> --replace <new>
+
+It walks the whole connected run from one block and reports the count, the extent and the
+ends. With `--replace` it converts exactly the blocks in the run and nothing else, which a
+region fill cannot do — a box around a snaking pipe catches everything else inside it.
+
+Give every block that counts as part of the run: a rail line may mix rail and powered
+rail, a pipe run may mix tiers. Start from a block the player pointed at.
+</connected_runs>
+
 <bulk_edits>
 For changing a lot of blocks — a forest to glass, a hillside to TNT — do not write the
 fills yourself. Minecraft caps /fill at 32768 blocks, so a real region is dozens of

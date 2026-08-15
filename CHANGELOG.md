@@ -5,6 +5,20 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.6.0 — Minecraft 26.2 (NeoForge)
+
+- `mctrace` follows a connected run of pipe, cable, rail or conduit from one block and
+  reports its size, extent and ends. `--replace` converts exactly the run, which a region
+  fill cannot do around a snaking pipe. Tracing 68 blocks of pipe by hand previously took
+  several minutes of probing per question.
+- Force-loading a chunk does not make it readable at once. Probing or filling immediately
+  reports every block as absent, so `mcfill` could silently change nothing on cold chunks
+  and a trace would stop early. `mcfill`, `mctp` and `mctrace` now wait for the chunk.
+- The RCON client waited 150ms after every reply in case it was split. Only a reply at the
+  packet ceiling can be continued, so the wait is now conditional. A trace fell from 47 to
+  10 seconds; every tool benefits.
+- New `assistant` persona: a capable first-party helper.
+
 ## 0.5.0 — Minecraft 26.2 (NeoForge)
 
 - Personality moved out of the system prompt into `/opt/mcbot/personas/*.md`. A voice is

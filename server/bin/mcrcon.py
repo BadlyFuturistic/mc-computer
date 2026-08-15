@@ -18,6 +18,7 @@ PASS_FILE = Path("/etc/mcbot/rcon.pass")
 
 SERVERDATA_AUTH = 3
 SERVERDATA_EXECCOMMAND = 2
+SPLIT_THRESHOLD = 4000   # replies shorter than this cannot be continued
 
 
 class RconError(RuntimeError):
@@ -105,8 +106,14 @@ class Rcon:
             req_id, _, body = self._recv()
             if req_id == sent:
                 chunks.append(body)
-            # Responses over 4096 bytes arrive split; stop once nothing more is waiting.
-            if not select.select([self.sock], [], [], 0.15)[0]:
+            # A short, non-empty reply is complete: only a reply at the packet ceiling
+            # can be continued. An empty one may still be followed by the real body, so
+            # it has to wait — but briefly, since the server is on this machine. Waiting
+            # 150ms after every reply dominates any tool issuing hundreds of probes.
+            if body and len(body) < SPLIT_THRESHOLD:
+                break
+            wait = 0.15 if len(body) >= SPLIT_THRESHOLD else 0.03
+            if not select.select([self.sock], [], [], wait)[0]:
                 break
         return "".join(chunks).replace("\x1b[0m", "").strip()
 
