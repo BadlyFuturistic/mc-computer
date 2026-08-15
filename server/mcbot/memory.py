@@ -12,6 +12,7 @@ Bloat control is the nightly rollup: raw request rows collapse into one summary 
 per day, and anything older than RAW_RETENTION_DAYS is deleted. A month of history
 is a few dozen lines, not a transcript.
 """
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS fable_requests (
     player      TEXT NOT NULL,      -- who asked for it
     what        TEXT NOT NULL,
     approved_at REAL,               -- set by the daemon on seeing the admin approve
-    used_at     REAL                -- consumed by one run; approvals are single-use
+    used_at     REAL                -- first run, or a denial; the grant itself is in settings
 );
 
 CREATE TABLE IF NOT EXISTS backups (
@@ -214,9 +215,23 @@ def pending_fable(db):
 
 def approve_fable(db, req_id: int) -> None:
     """Only the daemon calls this, on seeing the admin approve in raw chat. The model
-    has no route to it, which is what makes the approval meaningful."""
+    has no route to it, which is what makes the approval meaningful.
+
+    Approving opens a grant rather than a single use. A request is rarely finished in
+    one run — "actually make it blue" is the same piece of work — and asking the admin
+    to approve every follow-up made the feature unusable in practice. The grant ends
+    at the boundaries the admin's decision was scoped to: see revoke_fable().
+    """
+    row = db.execute("SELECT * FROM fable_requests WHERE id = ?", (req_id,)).fetchone()
     db.execute("UPDATE fable_requests SET approved_at = ? WHERE id = ?",
                (time.time(), req_id))
+    set_setting(db, "fable_grant", json.dumps({
+        "request_id": req_id,
+        "player": row["player"] if row else "",
+        "what": row["what"] if row else "",
+        "since": time.time(),
+        "runs": 0,
+    }))
     db.commit()
 
 
@@ -227,17 +242,49 @@ def deny_fable(db, req_id: int) -> None:
     db.commit()
 
 
-def claim_fable(db):
-    """Take an approved, unused approval. Single use, and expires after 30 minutes."""
-    row = db.execute(
-        "SELECT * FROM fable_requests WHERE approved_at IS NOT NULL AND used_at IS NULL "
-        "AND approved_at > ? ORDER BY approved_at DESC LIMIT 1",
-        (time.time() - 1800,)).fetchone()
-    if row:
+def fable_grant(db):
+    """The open grant, or None. Reading it does not spend it."""
+    raw = get_setting(db, "fable_grant")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def note_fable_run(db) -> None:
+    """Record that the grant was used once. Kept for the audit trail and for telling
+    the admin how much has been done on one approval; it does not close the grant."""
+    grant = fable_grant(db)
+    if not grant:
+        return
+    grant["runs"] = grant.get("runs", 0) + 1
+    grant["last_run"] = time.time()
+    set_setting(db, "fable_grant", json.dumps(grant))
+    if grant.get("request_id"):
         db.execute("UPDATE fable_requests SET used_at = ? WHERE id = ?",
-                   (time.time(), row["id"]))
-        db.commit()
-    return row
+                   (time.time(), grant["request_id"]))
+    db.commit()
+
+
+def revoke_fable(db, why: str) -> bool:
+    """End the grant. Returns whether there was one to end.
+
+    The daemon calls this at the two boundaries the admin's approval was scoped to:
+    when the conversation is wiped (a new session, so the work being approved of is
+    forgotten anyway) and when the admin logs out (nobody left to object). It also
+    runs at startup, because a grant that outlived the daemon belongs to a
+    conversation that no longer exists.
+    """
+    grant = fable_grant(db)
+    if not grant:
+        return False
+    set_setting(db, "fable_grant", "")
+    log_event(db, "note",
+              f"fable access ended ({why}) after {grant.get('runs', 0)} run(s)",
+              player=grant.get("player") or None)
+    return True
 
 
 # ----------------------------------------------------------------- reading

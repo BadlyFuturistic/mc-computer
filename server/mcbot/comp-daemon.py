@@ -93,6 +93,8 @@ RESULT_PREVIEW = 600                # chars of tool output kept in the readable 
 LOG_BUDGET_BYTES = 2 * 1024**3
 ROTATE_AT_BYTES = 256 * 1024**2
 SILENT_TOKEN = "[no response]"
+FIRST_UPDATE_SEC = 15               # a turn shorter than this needs no commentary
+UPDATE_EVERY_SEC = 20               # at most one progress line this often
 # -------------------------------------------------------------------------
 
 LOG_DIR.mkdir(exist_ok=True)
@@ -165,6 +167,91 @@ def say(text: str) -> None:
     subprocess.run(["/opt/mc/compsay", text[:400]], capture_output=True, text=True)
 
 
+# --------------------------------------------------------------- progress
+# What a tool call means, in the words a player would use. Read from the command the
+# model actually ran, so a progress line costs no tokens, cannot invent a step that is
+# not happening, and needs nothing from the model itself.
+#
+# Longest match wins, so the specific forms must come before the general ones.
+_STEPS = (
+    ("mcblock survey",  "working out what the area is made of"),
+    ("mcblock find",    "searching for that block"),
+    ("mcblock",         "checking what is actually there"),
+    ("mctrace",         "following the run to see where it goes"),
+    ("mcbuild",         "placing the structure"),
+    ("mcbag",           "looking through the backpack"),
+    ("mcwhere",         "finding where that is"),
+    ("mctp",            "finding somewhere safe to put you down"),
+    ("mcignite",        "priming the TNT"),
+    ("mcbackup",        "starting a backup"),
+    ("mcrestart",       "getting ready to restart"),
+    ("mcthink",         "thinking this one through properly"),
+    ("mcfable",         "handing this to Fable"),
+    ("mcnote",          "checking my notes"),
+    ("mchealth",        "checking my own health"),
+)
+
+# mccmd is the raw console, so the phrase has to come from the Minecraft command inside.
+_COMMANDS = (
+    ("fill",      "changing the blocks"),
+    ("setblock",  "changing the blocks"),
+    ("clone",     "copying that across"),
+    ("summon",    "summoning that"),
+    ("give",      "handing that over"),
+    ("kill",      "clearing those out"),
+    ("tp",        "moving you"),
+    ("teleport",  "moving you"),
+    ("time set",  "changing the time"),
+    ("weather",   "changing the weather"),
+    ("forceload", "loading the chunks"),
+    ("data get",  "reading that back"),
+    ("execute",   "checking the world"),
+)
+
+
+def describe(command: str) -> str | None:
+    """A plain-language phrase for a tool call, or None if it is not worth mentioning."""
+    text = " ".join(command.split())
+    if "mcfill" in text:
+        if "--trees" in text:
+            return "converting the trees, leaves first"
+        return "replacing the blocks" if "--replace" in text else "filling the area"
+    for needle, phrase in _STEPS:
+        if needle in text:
+            return phrase
+    if "mccmd" in text:
+        for needle, phrase in _COMMANDS:
+            if needle in text:
+                return phrase
+        return "running that on the server"
+    return None
+
+
+async def report_progress(turn) -> None:
+    """Say what is happening while a long turn runs, the way a person would.
+
+    Deliberately quiet: nothing at all until a turn has run long enough to be worth
+    explaining, then at most one line per interval, and never the same line twice in a
+    row. A turn that answers a question or is not addressed to us runs no tools and so
+    says nothing here. A stream of updates is worse than silence.
+    """
+    said = None
+    try:
+        await asyncio.sleep(FIRST_UPDATE_SEC)
+        while True:
+            step = turn.activity
+            if step and step != said:
+                try:
+                    await asyncio.to_thread(say, f"{step}...")
+                    said = step
+                except Exception as e:  # noqa: BLE001
+                    # One failed line must not end the commentary for the whole job.
+                    log(f"progress line failed: {type(e).__name__}: {e}", "warn")
+            await asyncio.sleep(UPDATE_EVERY_SEC)
+    except asyncio.CancelledError:
+        pass
+
+
 async def tail_chat(q: "asyncio.Queue[tuple[str, str]]") -> None:
     """Follow the server log, surviving rotation without dropping the lines it hides."""
     first_open = True
@@ -214,6 +301,7 @@ class Turn:
         self.final = ""
         self.tools = 0
         self.cost = 0.0
+        self.activity = None      # what to tell players we are doing, right now
 
     def handle(self, msg) -> None:
         if isinstance(msg, SystemMessage):
@@ -239,6 +327,11 @@ class Turn:
                     shown = (block.input or {}).get("command") or json.dumps(block.input)[:800]
                     if "compsay" in str(shown):
                         self.spoke = True
+                        # It just spoke for itself; do not follow that with a
+                        # progress line saying the same thing less well.
+                        self.activity = None
+                    elif step := describe(str(shown)):
+                        self.activity = step
                     log_block(f"tool {block.name}:", str(shown), "action")
             return
 
@@ -286,10 +379,16 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
     started = time.time()
     turn = Turn()
 
-    await client.query(prompt)
-    async for msg in client.receive_response():
-        record({"kind": type(msg).__name__, "repr": repr(msg)[:4000]})
-        turn.handle(msg)
+    # Runs alongside the response so players are not left watching nothing happen
+    # through a long job. Cancelled however this turn ends, interruption included.
+    reporter = asyncio.create_task(report_progress(turn))
+    try:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            record({"kind": type(msg).__name__, "repr": repr(msg)[:4000]})
+            turn.handle(msg)
+    finally:
+        reporter.cancel()
 
     if not turn.spoke and turn.final and turn.final != SILENT_TOKEN:
         # It answered into the void — its own text goes to this log, not to players.
@@ -520,6 +619,10 @@ async def main() -> None:
     asyncio.create_task(tail_chat(q))
     db = memory.connect()
     memory.rollup(db)
+    # A grant that outlived the daemon belongs to a conversation that no longer exists,
+    # and the admin who gave it is not necessarily still here.
+    if memory.revoke_fable(db, "daemon restarted"):
+        log("cleared a fable approval left over from the last run", "wake")
     seen_crashes = {p.name for p in new_crash_reports()}   # ignore ones already on disk
 
     def make_client() -> ClaudeSDKClient:
@@ -578,6 +681,12 @@ async def main() -> None:
 
             if kind == "leave":
                 memory.log_event(db, "leave", "left the game", player=payload)
+                # The admin approved Fable for a conversation they were part of. Once
+                # they are gone there is nobody to object to the next follow-up, so the
+                # grant goes with them.
+                if payload.lower() == ADMIN.lower() and memory.revoke_fable(
+                        db, "admin logged out"):
+                    log("admin left — fable access closed", "wake")
                 if payload in greet_at:
                     log(f"{payload} left before being greeted — messages stay pending")
                     del greet_at[payload]
@@ -665,6 +774,10 @@ async def main() -> None:
                     fresh_session = True
                     session_persona = active_persona()
                     SESSION_COST["seen"] = 0.0
+                    # The approved work is forgotten along with the transcript, so the
+                    # approval that covered it does not carry into the next one.
+                    if memory.revoke_fable(db, "conversation wiped"):
+                        log("fable access closed with the old session", "wake")
                 continue
 
             if memory.spent_today(db) >= daily_limit():
@@ -684,6 +797,8 @@ async def main() -> None:
                 turns_this_session = 0
                 fresh_session = True
                 SESSION_COST["seen"] = 0.0
+                if memory.revoke_fable(db, "conversation wiped"):
+                    log("fable access closed with the old session", "wake")
 
             lines, pending = pending, []
             who = ", ".join(sorted({l.split(":", 1)[0] for l in lines}))

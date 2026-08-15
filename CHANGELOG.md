@@ -5,6 +5,30 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.8.0 — Minecraft 26.2 (NeoForge)
+
+**Fable approval now covers a job, not a single run.** A request is rarely finished in one
+go — "actually make it blue" is the same piece of work — and re-approving every follow-up
+made the feature unusable. Approving opens a grant that stays open for follow-ups.
+
+- The grant ends at the boundaries the admin's decision was scoped to: the conversation
+  being wiped (a session rollover or a persona change), the admin logging out, or the
+  daemon restarting. An old yes can never be spent on a later, unrelated conversation.
+- `mcfable status` reports whether access is open and how many runs it has covered.
+- The request/approve/deny audit trail is unchanged; use no longer closes the approval.
+
+**The bot now says what it is doing during long jobs.** Player-legible, and quiet by
+design: nothing for the first 15s, then at most one line every 20s, never the same line
+twice in a row, and nothing at all for a turn that runs no real tools.
+
+- Phrases are derived from the command actually running — "following the run to see where
+  it goes", "converting the trees, leaves first", "working out what the area is made of".
+  Reading the tool call rather than asking the model costs no tokens and cannot narrate a
+  step that is not happening.
+- The prompt tells the model not to narrate as well, so the two do not double up.
+- A failed progress line is logged and skipped rather than silently killing the commentary
+  for the rest of the job.
+
 ## 0.7.0 — Minecraft 26.2 (NeoForge)
 
 Block reads now come from the world files instead of RCON. RCON has no command that

@@ -10,8 +10,10 @@ the admin approves. Both halves are enforced outside the model: `request` record
 who asked, and approval is granted by the daemon when it sees the admin agree in
 raw chat. Nothing this program does can approve its own request.
 
-Approvals are single-use and expire after 30 minutes, so an old yes cannot be
-spent on a later request.
+An approval opens a grant, not a single use: a job is rarely done in one run, and
+"actually make it blue" is the same piece of work. The grant ends when the
+conversation is wiped, when the admin logs out, or when the daemon restarts —
+so an old yes can never be spent on a later, unrelated conversation.
 """
 import asyncio
 import os
@@ -75,10 +77,11 @@ async def run_fable(request: str) -> int:
     if memory.spent_today(db) >= daily_limit():
         sys.exit("refused: today's spend limit has been reached")
 
-    approval = memory.claim_fable(db)
+    approval = memory.fable_grant(db)
     if not approval:
         sys.exit("refused: no approved request. The admin must approve first — "
                  "run 'mcfable request <player> \"<what>\"' and ask them in chat.")
+    memory.note_fable_run(db)
 
     load_env()
     opts = ClaudeAgentOptions(
@@ -118,10 +121,16 @@ def main() -> None:
         print(f"request {rid} recorded for {rest[0]} — awaiting admin approval in chat")
 
     elif cmd == "status":
+        grant = memory.fable_grant(db)
+        if grant:
+            print(f"approved and open: for {grant['player']} — {grant['what']}"
+                  f"  ({grant.get('runs', 0)} run(s) so far)")
+            print("  follow-ups need no further approval. Ends when the conversation "
+                  "is wiped or the admin logs out.")
         pend = memory.pending_fable(db)
         if pend:
             print(f"awaiting approval: #{pend['id']} for {pend['player']} — {pend['what']}")
-        else:
+        elif not grant:
             print("nothing awaiting approval")
 
     elif cmd == "run":
