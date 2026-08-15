@@ -60,6 +60,27 @@ def slices(x1, y1, z1, x2, y2, z2):
                 yield sx, sy, sz, ex, ey, ez
 
 
+def validate(r, block, replace, dimension):
+    """Reject an unknown block or filter before doing any work.
+
+    A mistyped or invented block id fails identically on every slice, so without this
+    a bad guess grinds through a hundred-plus commands, changes nothing, and blocks
+    every other request for minutes.
+    """
+    for value, what in ((block, "block"), (replace, "filter")):
+        if not value:
+            continue
+        probe = (f"execute in {dimension} run fill 0 -64 0 0 -64 0 {value}"
+                 if what == "block" else
+                 f"execute in {dimension} run fill 0 -64 0 0 -64 0 minecraft:air replace {value}")
+        out = r.command(probe)
+        if "Unknown block" in out or "Unknown tag" in out or "<--[HERE]" in out:
+            name = out.split("'")[1] if "'" in out else value
+            raise ValueError(
+                f"unknown {what}: {name}. Check the exact id — mod blocks rarely match "
+                f"the name used in game. /opt/mc/mcblocks <search> lists real ids.")
+
+
 def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label=""):
     """One region change, sliced under the fill cap. Returns blocks changed."""
     pieces = list(slices(x1, y1, z1, x2, y2, z2))
@@ -71,8 +92,9 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label=""):
 
     ctx = f"execute in {dimension} run "
     suffix = f" replace {replace}" if replace else ""
-    changed, failed = 0, 0
+    changed, failed, consecutive = 0, 0, 0
     with Rcon() as r:
+        validate(r, block, replace, dimension)
         for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
             r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
             out = r.command(f"{ctx}fill {sx} {sy} {sz} {ex} {ey} {ez} {block}{suffix}")
@@ -81,8 +103,18 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label=""):
                 changed += int("".join(c for c in out.split("filled")[1] if c.isdigit()) or 0)
             elif "No blocks were filled" not in out and out:
                 failed += 1
+                consecutive += 1
                 if failed <= 3:
                     print(f"  slice {i}: {out[:120]}", file=sys.stderr)
+                # Slices fail for the same reason or not at all. Grinding through the
+                # rest wastes minutes and holds up every other request.
+                if consecutive >= 3:
+                    raise ValueError(
+                        f"stopping after {consecutive} consecutive failures at slice "
+                        f"{i} of {len(pieces)} — the remaining slices will fail the "
+                        f"same way. Last error: {out[:140]}")
+            else:
+                consecutive = 0
             if i % 20 == 0:
                 print(f"  {i}/{len(pieces)} slices, {changed:,} blocks so far", flush=True)
     print(f"{label}changed {changed:,} block(s)"
@@ -146,6 +178,8 @@ def main() -> None:
             print("note: replacing logs on their own makes nearby natural leaves decay. "
                   "Use --trees to convert leaves first if that matters.", file=sys.stderr)
         run_fill(x1, y1, z1, x2, y2, z2, block, opts["replace"], opts["dimension"], dry)
+    except ValueError as e:
+        sys.exit(str(e))
     except RconError as e:
         sys.exit(f"rcon failed: {e}")
 
