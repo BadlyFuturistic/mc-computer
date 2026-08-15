@@ -1,45 +1,37 @@
 # mc-computer
 
 An in-game assistant for a Minecraft server. This repo is edited on a workstation and
-deployed to the Minecraft host; nothing here runs locally.
+deployed to the Minecraft host. Nothing here runs locally.
 
-Only project facts that are not obvious from the code belong in this file. Personal
-setup and preferences go in `CLAUDE.local.md`, which is gitignored.
+## Deploying is two halves, and only one needs privilege
 
-## The split that matters
+`./client/deploy.sh` installs `server/bin/` to `/opt/mc` needing no privilege, then
+`server/mcbot/` to `/opt/mcbot` needing sudo and a TTY. A run without a terminal lands the
+first half and silently skips the second, so the tools and the daemon end up at different
+versions. Check with `mchealth` on the host rather than assuming.
 
-| | |
-|---|---|
-| `server/bin/` | tools installed to `/opt/mc` on the Minecraft host — no privilege needed |
-| `server/mcbot/` | the daemon and its prompt, installed to `/opt/mcbot` — **needs sudo and a TTY** |
-| `client/` | deploy script and shell aliases for the workstation |
-
-`./client/deploy.sh` does both halves, but only the second prompts for sudo. A deploy run
-without a terminal lands the tools and silently skips the daemon and prompt, so the two
-can be different versions. Check with `mchealth` on the host rather than assuming.
-
-## Reads and writes are not symmetric
+## Reads and writes go to different places
 
 - **Writes go through RCON.** Editing region files under a running server corrupts them.
-- **Reads come from the region files** via `server/bin/region.py` — roughly 185x faster
-  than RCON probing, and it can answer "what block is this?", which RCON cannot.
-- Region reads see the **last save**. Tools call `save-all flush` (~0.3s) first. When
-  verifying a change you just made, do not pass `--no-flush` — you will read stale data
-  and conclude the change failed.
+- **Reads come from the region files** via `server/bin/region.py` — far faster than RCON,
+  and able to answer "what block is this?", which RCON cannot.
+- Region reads see the **last save**. Tools run `save-all flush` first. When verifying a
+  change you just made, never pass `--no-flush`: you will read stale data and conclude the
+  change failed.
 
 ## Things that fail silently
 
-Several dependencies change between Minecraft versions and then report success while doing
-nothing: NBT syntax, log line formats, datapack layout, and the chunk format the region
-reader decodes. See **Version compatibility** in `README.md` before upgrading Minecraft,
-and run `mcblock <a block you can see> --verify` afterwards.
+NBT syntax, log line formats, datapack layout, and the chunk format `region.py` decodes all
+change between Minecraft versions, then report success while doing nothing. Read **Version
+compatibility** in `README.md` before a Minecraft upgrade, and run
+`mcblock <a block you can see> --verify` after one.
 
 ## Conventions
 
-- Commit messages: imperative subject in sentence case, then prose explaining *why* the
+- Commit messages: imperative subject in sentence case, then prose explaining why the
   change exists and what failure it fixes. No bullet lists, no `feat:` prefixes.
 - Bump `VERSION` and add a `CHANGELOG.md` entry for behaviour changes.
-- Never commit secrets, `server/personas/frank.md`, or `server/mcbot/local-lore.md` — all
-  gitignored, all containing private or world-specific content.
-- Tools are standalone scripts with no extension; shared libraries are `*.py`. `deploy.sh`
-  derives file modes from that, so a new tool needs no list updating.
+- Never commit secrets, `server/personas/frank.md`, or `server/mcbot/local-lore.md`.
+
+Rules for writing the world-editing tools load from `.claude/rules/world-edit-tools.md`
+when you open anything under `server/bin/`.

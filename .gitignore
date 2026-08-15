@@ -31,3 +31,6 @@ server/personas/*.local.md
 
 # Personal project rules — preferences and operational notes, not shared
 CLAUDE.local.md
+
+# Project working notes — dated state, not product documentation
+notes/
