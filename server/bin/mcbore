@@ -40,6 +40,7 @@ import sys
 import time
 
 sys.path.insert(0, "/opt/mc")
+import builder  # noqa: E402
 import region  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
@@ -117,6 +118,50 @@ def find_mass(reader, start, facing, half, height, floor_y, limit):
             if clear_run >= CLEAR_RUN:
                 break
     return enter, exit_
+
+
+def block_cells(box):
+    x1, y1, z1, x2, y2, z2 = box
+    return {(x, y, z)
+            for x in range(x1, x2 + 1)
+            for y in range(y1, y2 + 1)
+            for z in range(z1, z2 + 1)}
+
+
+def lining_cells(inside, along_x: bool, floor_too: bool):
+    """The walls and ceiling around a tunnel — and nothing else.
+
+    Two things must not be touched, and growing the tunnel box by one in every
+    direction touched both.
+
+    The ends are open by definition. Capping them walls the tunnel off at both
+    mouths, which is the opposite of boring through something.
+
+    The floor is not ours. A tunnel carrying a road sits on that road, and the row
+    below the tunnel is its surface. Lining it replaces the road; clearing it again
+    afterwards deletes the road outright.
+    """
+    x1, y1, z1, x2, y2, z2 = inside
+    cells = set()
+    if along_x:
+        for x in range(x1, x2 + 1):
+            for y in range(y1, y2 + 1):
+                cells.add((x, y, z1 - 1))
+                cells.add((x, y, z2 + 1))
+            for z in range(z1 - 1, z2 + 2):
+                cells.add((x, y2 + 1, z))
+                if floor_too:
+                    cells.add((x, y1 - 1, z))
+    else:
+        for z in range(z1, z2 + 1):
+            for y in range(y1, y2 + 1):
+                cells.add((x1 - 1, y, z))
+                cells.add((x2 + 1, y, z))
+            for x in range(x1 - 1, x2 + 2):
+                cells.add((x, y2 + 1, z))
+                if floor_too:
+                    cells.add((x, y1 - 1, z))
+    return cells
 
 
 def box_for(start, facing, first, last, half, height, floor_y, out=0):
@@ -206,48 +251,29 @@ def main() -> None:
         if dry:
             return
 
-        shell = box_for(start, facing, first, last, half, height, floor_y, out=1)
         ctx = f"execute in {dimension} run "
         dx, dz = FACINGS[facing]
+        interior = block_cells(inside)
+        lining = lining_cells(inside, dx != 0, floor_too) if line else set()
         changed = 0
         with Rcon() as rcon:
-            rcon.command(f"{ctx}forceload add {shell[0] - MARGIN * 16} "
-                         f"{shell[2] - MARGIN * 16} {shell[3] + MARGIN * 16} "
-                         f"{shell[5] + MARGIN * 16}")
-            time.sleep(SETTLE)
-            try:
-                def fill(box, block):
-                    nonlocal changed
-                    out = rcon.command(
-                        f"{ctx}fill {box[0]} {box[1]} {box[2]} "
-                        f"{box[3]} {box[4]} {box[5]} {block}")
-                    if "Unknown block" in out or "<--[HERE]" in out:
-                        raise ValueError(f"unknown block: {block}")
-                    if "Successfully filled" in out:
-                        changed += int("".join(c for c in out.split("filled")[1]
-                                               if c.isdigit()) or 0)
-
-                if line:
-                    # Line first, then hollow it out. Filling the shell as one solid
-                    # block and clearing the inside afterwards is simpler than six
-                    # face fills, and cannot leave a seam at the corners.
-                    fill(shell, line)
-                    if not floor_too:
-                        # Put the original floor back: a road already has one.
-                        fill((shell[0], shell[1], shell[2],
-                              shell[3], shell[1], shell[5]), "minecraft:air")
-                fill(inside, "minecraft:air")
-
-                if light:
-                    ceiling = inside[4] + 1
+            changed += builder.write(rcon, dimension, interior, "minecraft:air")
+            if lining:
+                changed += builder.write(rcon, dimension, lining, line)
+            if light:
+                ceiling = inside[4] + 1
+                load = (inside[0] - MARGIN * 16, inside[2] - MARGIN * 16,
+                        inside[3] + MARGIN * 16, inside[5] + MARGIN * 16)
+                rcon.command(f"{ctx}forceload add {load[0]} {load[1]} {load[2]} {load[3]}")
+                try:
+                    time.sleep(SETTLE)
                     for step in range(first, last + 1, max(1, every)):
                         lx = start[0] + dx * step
                         lz = start[1] + dz * step
                         rcon.command(f"{ctx}setblock {lx} {ceiling} {lz} {light}")
-            finally:
-                rcon.command(f"{ctx}forceload remove {shell[0] - MARGIN * 16} "
-                             f"{shell[2] - MARGIN * 16} {shell[3] + MARGIN * 16} "
-                             f"{shell[5] + MARGIN * 16}")
+                finally:
+                    rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
+                                 f"{load[2]} {load[3]}")
 
         print(f"bored {length} blocks"
               + (f", lined with {line}" if line else "")

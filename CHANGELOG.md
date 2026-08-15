@@ -5,6 +5,22 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.11.1 — Minecraft 26.2 (NeoForge)
+
+**`mcbore` destroyed the road it was tunnelling for, and sealed both ends of the tunnel.**
+The lining was built by filling a box one block larger than the tunnel on every side and
+then hollowing it out. Growing it on *every* side was wrong in two directions at once:
+
+- The row below the tunnel is the road surface. It was filled with stone bricks and then
+  "restored" by filling that row with air, which deleted 19 blocks of road outright.
+- The two faces along the direction of travel are the mouths. Filling them walled the
+  tunnel off at both ends — the opposite of boring through something.
+
+The lining is now built from the wall and ceiling faces explicitly. It never includes the
+end faces, and never includes the floor unless `--floor-too` is given. Checked against the
+exact tunnel that failed: the lining spans x -1370..-1354 against an interior of
+-1370..-1354, reaches neither mouth, and never touches the road row.
+
 ## 0.11.0 — Minecraft 26.2 (NeoForge)
 
 **An unreadable config was indistinguishable from a config that agreed with every
