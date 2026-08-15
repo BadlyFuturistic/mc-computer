@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""mcshape — build a shape without writing out the geometry.
+
+  mcshape box       <x1> <y1> <z1> <x2> <y2> <z2> <block>
+  mcshape sphere    <cx> <cy> <cz> <r> <block>
+  mcshape ellipsoid <cx> <cy> <cz> <rx> <ry> <rz> <block>
+  mcshape cylinder  <cx> <cy> <cz> <r> <height> <block>   [--axis y|x|z]
+  mcshape dome      <cx> <cy> <cz> <r> <block>
+  mcshape bowl      <cx> <cy> <cz> <r> <block>
+  mcshape cone      <cx> <cy> <cz> <r> <height> <block>   [--down]
+  mcshape pyramid   <cx> <cy> <cz> <half> <block>         [--down]
+  mcshape torus     <cx> <cy> <cz> <ring> <tube> <block>
+  mcshape disc      <cx> <cy> <cz> <r> <block>            [--axis y|x|z]
+  mcshape line      <x1> <y1> <z1> <x2> <y2> <z2> <block> [--radius n]
+  mcshape wall      <x1> <y1> <z1> <x2> <y2> <z2> <block> [--thickness n]
+  mcshape ramp      <x1> <y1> <z1> <x2> <y2> <z2> <block> [--width n]
+
+Centres are block coordinates; r is a radius in blocks. Every shape takes:
+
+  --hollow           only the outer shell
+  --thickness <n>    how thick the shell is, with --hollow      (default 1)
+  --replace <filter> only change blocks matching this block or #tag
+  --from-markers <player>   take the coordinates from blocks placed in the world
+  --keep-markers     leave the marker blocks where they are
+  --dry-run          report the size and extent, change nothing
+  --force            proceed past the size warning
+  --dimension <dim>  default minecraft:overworld
+
+Freehanding a sphere out of /fill commands is not practical, and describing one in NBT
+means building it first. These are computed and then merged back into as few fills as
+possible, so a cylinder is a handful of commands rather than thousands.
+
+--hollow works by erosion — a block is shell if something beside it is not part of the
+shape — so it means the same thing for a cone or a torus as for a box, and can never
+disagree with the solid version.
+
+With --from-markers, place blocks in the world instead of reading out coordinates:
+see `mcmark` for what each marker means.
+"""
+import math
+import sys
+
+sys.path.insert(0, "/opt/mc")
+import builder  # noqa: E402
+import marks  # noqa: E402
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+WARN_VOLUME = 2_000_000
+
+
+# ------------------------------------------------------------------ shapes
+def box(x1, y1, z1, x2, y2, z2):
+    x1, x2 = sorted((x1, x2)); y1, y2 = sorted((y1, y2)); z1, z2 = sorted((z1, z2))
+    return {(x, y, z)
+            for x in range(x1, x2 + 1)
+            for y in range(y1, y2 + 1)
+            for z in range(z1, z2 + 1)}
+
+
+def ellipsoid(cx, cy, cz, rx, ry, rz):
+    # The half-block offset puts the surface between blocks rather than through them,
+    # which is what stops a sphere coming out with flat poles.
+    ex, ey, ez = rx + 0.5, ry + 0.5, rz + 0.5
+    return {(cx + dx, cy + dy, cz + dz)
+            for dx in range(-rx, rx + 1)
+            for dy in range(-ry, ry + 1)
+            for dz in range(-rz, rz + 1)
+            if (dx / ex) ** 2 + (dy / ey) ** 2 + (dz / ez) ** 2 <= 1.0}
+
+
+def sphere(cx, cy, cz, r):
+    return ellipsoid(cx, cy, cz, r, r, r)
+
+
+def dome(cx, cy, cz, r):
+    return {c for c in sphere(cx, cy, cz, r) if c[1] >= cy}
+
+
+def bowl(cx, cy, cz, r):
+    return {c for c in sphere(cx, cy, cz, r) if c[1] <= cy}
+
+
+def cylinder(cx, cy, cz, r, height, axis="y"):
+    e = r + 0.5
+    cells = set()
+    for step in range(height):
+        for a in range(-r, r + 1):
+            for b in range(-r, r + 1):
+                if (a / e) ** 2 + (b / e) ** 2 > 1.0:
+                    continue
+                if axis == "y":
+                    cells.add((cx + a, cy + step, cz + b))
+                elif axis == "x":
+                    cells.add((cx + step, cy + a, cz + b))
+                else:
+                    cells.add((cx + a, cy + b, cz + step))
+    return cells
+
+
+def disc(cx, cy, cz, r, axis="y"):
+    return cylinder(cx, cy, cz, r, 1, axis)
+
+
+def cone(cx, cy, cz, r, height, down=False):
+    cells = set()
+    for step in range(height):
+        # Radius tapers to nothing at the tip.
+        rr = r * (1 - step / max(1, height - 1)) if height > 1 else r
+        e = rr + 0.5
+        y = cy - step if down else cy + step
+        for a in range(-r, r + 1):
+            for b in range(-r, r + 1):
+                if (a / e) ** 2 + (b / e) ** 2 <= 1.0:
+                    cells.add((cx + a, y, cz + b))
+    return cells
+
+
+def pyramid(cx, cy, cz, half, down=False):
+    cells = set()
+    for step in range(half + 1):
+        side = half - step
+        y = cy - step if down else cy + step
+        for a in range(-side, side + 1):
+            for b in range(-side, side + 1):
+                cells.add((cx + a, y, cz + b))
+    return cells
+
+
+def torus(cx, cy, cz, ring, tube):
+    reach = ring + tube
+    cells = set()
+    for dx in range(-reach, reach + 1):
+        for dz in range(-reach, reach + 1):
+            flat = math.hypot(dx, dz) - ring
+            for dy in range(-tube, tube + 1):
+                if flat ** 2 + dy ** 2 <= (tube + 0.5) ** 2:
+                    cells.add((cx + dx, cy + dy, cz + dz))
+    return cells
+
+
+def line(x1, y1, z1, x2, y2, z2, radius=0):
+    """A straight run of blocks between two points, thickened if asked."""
+    steps = max(abs(x2 - x1), abs(y2 - y1), abs(z2 - z1))
+    cells = set()
+    for i in range(steps + 1):
+        t = i / steps if steps else 0
+        px, py, pz = (round(x1 + (x2 - x1) * t),
+                      round(y1 + (y2 - y1) * t),
+                      round(z1 + (z2 - z1) * t))
+        if radius <= 0:
+            cells.add((px, py, pz))
+        else:
+            cells |= sphere(px, py, pz, radius)
+    return cells
+
+
+def wall(x1, y1, z1, x2, y2, z2, thickness=1):
+    """A vertical wall following the line from one point to the other."""
+    lo, hi = sorted((y1, y2))
+    footing = line(x1, 0, z1, x2, 0, z2, radius=(thickness - 1) // 2)
+    return {(x, y, z) for (x, _, z) in footing for y in range(lo, hi + 1)}
+
+
+def ramp(x1, y1, z1, x2, y2, z2, width=1):
+    """A staircase climbing from one point to the other, filled in underneath."""
+    span = max(abs(x2 - x1), abs(z2 - z1))
+    half = (width - 1) // 2
+    # Which way is across the ramp: the axis it travels least.
+    across_x = abs(x2 - x1) < abs(z2 - z1)
+    lo_y = min(y1, y2)
+    cells = set()
+    for i in range(span + 1):
+        t = i / span if span else 0
+        px = round(x1 + (x2 - x1) * t)
+        pz = round(z1 + (z2 - z1) * t)
+        py = round(y1 + (y2 - y1) * t)
+        for w in range(-half, half + 1):
+            wx = px + (w if across_x else 0)
+            wz = pz + (0 if across_x else w)
+            for y in range(lo_y, py + 1):
+                cells.add((wx, y, wz))
+    return cells
+
+
+# The number of arguments each takes lives in marks.ARITY, so mcmark can report what a
+# shape would be built with without importing this file.
+SHAPES = {
+    "box": box, "sphere": sphere, "ellipsoid": ellipsoid, "cylinder": cylinder,
+    "dome": dome, "bowl": bowl, "cone": cone, "pyramid": pyramid, "torus": torus,
+    "disc": disc, "line": line, "wall": wall, "ramp": ramp,
+}
+
+
+# ------------------------------------------------------------------ driver
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    thickness = take("--thickness", int, 1)
+    replace = take("--replace")
+    dimension = take("--dimension", str, "minecraft:overworld")
+    axis = take("--axis", str, "y")
+    radius = take("--radius", int, 0)
+    width = take("--width", int, 1)
+    from_markers = take("--from-markers")
+    hollow = "--hollow" in args
+    dry = "--dry-run" in args
+    force = "--force" in args
+    down = "--down" in args
+    keep = "--keep-markers" in args
+    args = [a for a in args
+            if a not in ("--hollow", "--dry-run", "--force", "--down", "--keep-markers")]
+
+    if not args:
+        sys.exit(__doc__)
+    kind, rest = args[0], args[1:]
+    if kind not in SHAPES:
+        sys.exit(f"no such shape: {kind}. Available: {', '.join(sorted(SHAPES))}")
+    make, arity = SHAPES[kind], marks.ARITY[kind]
+
+    found = None
+    try:
+        if from_markers:
+            reader = region.Reader(dimension)
+            reader.flush()
+            found = marks.near_player(reader, from_markers)
+            numbers = marks.parameters(found, kind, arity)
+            if not rest:
+                sys.exit("give the block to build with, after the shape name")
+            block = rest[-1]
+            print(f"markers: {marks.describe(found)}")
+        else:
+            if len(rest) < arity + 1:
+                sys.exit(f"{kind} needs {arity} number(s) then a block — see the help")
+            try:
+                numbers = [int(v) for v in rest[:arity]]
+            except ValueError:
+                sys.exit("coordinates and sizes must be whole numbers")
+            block = rest[arity]
+
+        extra = {}
+        if kind in ("cylinder", "disc"):
+            extra["axis"] = axis
+        if kind in ("cone", "pyramid"):
+            extra["down"] = down
+        if kind == "line":
+            extra["radius"] = radius
+        if kind == "wall":
+            extra["thickness"] = max(1, width if width > 1 else thickness)
+        if kind == "ramp":
+            extra["width"] = width
+
+        cells = make(*numbers, **extra)
+        if not cells:
+            sys.exit("that produces no blocks — check the sizes")
+        if hollow:
+            cells = builder.shell(cells, thickness)
+
+        x1, y1, z1, x2, y2, z2 = builder.bounds(cells)
+        boxes = builder.to_boxes(cells)
+        fills = sum(1 for b in boxes for _ in builder.split(b))
+        print(f"{kind}: {len(cells):,} block(s) in {fills} fill(s)"
+              f"{' — shell ' + str(thickness) + ' thick' if hollow else ''}")
+        print(f"extent: x {x1}..{x2}  y {y1}..{y2}  z {z1}..{z2}")
+
+        if len(cells) > WARN_VOLUME and not force:
+            sys.exit(f"refusing: {len(cells):,} blocks will lag the server. "
+                     f"Make it smaller, or pass --force if this is intended.")
+        if dry:
+            return
+
+        def note(done, total, changed):
+            print(f"  {done}/{total} fills, {changed:,} blocks so far", flush=True)
+
+        with Rcon() as rcon:
+            changed = builder.write(rcon, dimension, cells, block, replace, note)
+            if found and not keep:
+                # Markers left inside a build show up as gold blocks in a wall.
+                marks.clear(rcon, dimension, found)
+        print(f"built {changed:,} block(s) of {block}")
+
+    except (region.RegionError, marks.MarkError, ValueError) as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

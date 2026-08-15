@@ -5,6 +5,24 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.10.0 — Minecraft 26.2 (NeoForge)
+
+**Shapes, and marking a build out in the world instead of reading coordinates aloud.**
+
+- New `mcshape`: box, sphere, ellipsoid, cylinder, dome, bowl, cone, pyramid, torus, disc,
+  line, wall and ramp. `--hollow` with `--thickness` works on all of them.
+- New `mcmark`: gold block marks a corner, emerald the centre, redstone a second
+  measurement. `mcshape --from-markers <player>` builds from them and clears them
+  afterwards so they are never left inside the build. Sweeping for markers is only
+  practical because blocks are read from the region files — a 128-block box costs
+  hundredths of a second, so no selection wand or click handling is needed.
+- New `builder.py` merges the computed blocks back into as few fills as possible: runs
+  along x, rectangles across z, then boxes up y. A 22,470-block cylinder becomes 19 fills
+  and a cuboid becomes one. Merging is verified lossless against the original cell set.
+- Hollowing is erosion — a block is shell if something beside it is not in the shape — so
+  it means the same for a torus as for a box and cannot disagree with the solid form.
+- Measured: a hollow radius-12 sphere is 1,550 blocks in 446 fills, built in 3.5s.
+
 ## 0.9.0 — Minecraft 26.2 (NeoForge)
 
 **`mcblock find` was hiding the extent of what it found, and a tunnel was bored short

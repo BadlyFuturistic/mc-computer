@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""mcmark — read the markers a player has placed, and say what they describe.
+
+  mcmark <player> [--radius 64]
+  mcmark --box <x1> <y1> <z1> <x2> <y2> <z2>
+  mcmark <player> --for <shape>     the numbers that shape would be built with
+  mcmark <player> --clear           remove the markers without building anything
+
+  gold block       a corner, or a point on the edge of a round shape
+  emerald block    the centre
+  redstone block   the second measurement — a cone's height, a torus tube
+
+Marking a build in the world beats reading coordinates out loud: stand where the corner
+goes and put a block down. `mcshape <kind> --from-markers <player> <block>` then builds
+from them and clears them afterwards.
+
+This is the tool for checking what it thinks you meant before anything is built.
+"""
+import sys
+
+sys.path.insert(0, "/opt/mc")
+import marks  # noqa: E402
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    radius = take("--radius", int, marks.SEARCH_RADIUS)
+    dimension = take("--dimension", str, "minecraft:overworld")
+    shape = take("--for")
+    use_box = "--box" in args
+    if use_box:
+        args.remove("--box")
+    clear = "--clear" in args
+    if clear:
+        args.remove("--clear")
+
+    if not args:
+        sys.exit(__doc__)
+
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+
+        if use_box:
+            try:
+                box = [int(v) for v in args[:6]]
+            except (ValueError, IndexError):
+                sys.exit("--box needs six whole numbers")
+            found = marks.find_in_box(reader, box)
+            if not any(found.values()):
+                sys.exit("no markers in that box")
+        else:
+            found = marks.near_player(reader, args[0], radius)
+
+        for kind in ("corner", "centre", "second"):
+            spots = found.get(kind) or []
+            if spots:
+                print(f"{kind} ({marks.KINDS[kind].split(':')[-1]}):")
+                for x, y, z in spots:
+                    print(f"  {x} {y} {z}")
+
+        corners = found["corner"]
+        if len(corners) >= 2:
+            x1, y1, z1, x2, y2, z2 = marks._span(found)
+            print(f"box: x {x1}..{x2}  y {y1}..{y2}  z {z1}..{z2}"
+                  f"  ({x2 - x1 + 1} x {y2 - y1 + 1} x {z2 - z1 + 1})")
+
+        if shape:
+            if shape not in marks.ARITY:
+                sys.exit(f"no such shape: {shape}. "
+                         f"Available: {', '.join(sorted(marks.ARITY))}")
+            numbers = marks.parameters(found, shape, marks.ARITY[shape])
+            print(f"{shape} would be built with: "
+                  + " ".join(str(n) for n in numbers))
+
+        if clear:
+            with Rcon() as rcon:
+                gone = marks.clear(rcon, dimension, found)
+            print(f"removed {gone} marker(s)")
+
+    except (marks.MarkError, region.RegionError) as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

@@ -374,6 +374,40 @@ arguing. A live backup before anything risky, no downtime, never deletes:
   sudo -n /opt/mc/mcbackup
 </restarts>
 
+<shapes>
+For anything geometric — a dome, a tower, a sphere, a ring, a ramp — use this rather than
+writing fills yourself.
+
+  /opt/mc/mcshape <kind> <numbers...> <block> [--hollow] [--thickness n] [--replace <f>]
+
+  box  sphere  ellipsoid  cylinder  dome  bowl  cone  pyramid  torus  disc  line  wall  ramp
+
+  /opt/mc/mcshape sphere 100 80 200 12 minecraft:glass --hollow
+  /opt/mc/mcshape cylinder 100 64 200 8 30 minecraft:stone_bricks --hollow
+  /opt/mc/mcshape ramp 100 64 200 140 80 200 minecraft:smooth_stone --width 5
+
+`mcshape <kind>` with no numbers prints what that shape takes. `--dry-run` reports the
+block count and extent first — do that before anything large. `--hollow` works on every
+shape, and `--thickness` sets how thick the shell is.
+
+Do not build round things out of hand-written fills. A sphere is thousands of blocks whose
+positions you cannot check by eye, and a wrong one has to be cleared before it can be
+retried.
+
+Players can mark a build in the world instead of reading out coordinates:
+
+  gold block = a corner or an edge point, emerald block = the centre,
+  redstone block = a second measurement, such as a cone's height
+
+  /opt/mc/mcmark <player>                          what they have marked
+  /opt/mc/mcmark <player> --for dome               the numbers that shape would use
+  /opt/mc/mcshape dome --from-markers <player> <block>
+
+Check with `mcmark --for <kind>` and say what you are about to build before building it —
+the markers are the player's instruction and worth confirming. They are cleared
+automatically afterwards, so they are never left inside the finished build.
+</shapes>
+
 <tunnels>
 To cut through a hill, a cliff or any mass in the way, use this. Never work the extent out
 yourself.

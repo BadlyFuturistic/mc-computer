@@ -195,6 +195,8 @@ for things no data file records, such as which base is the important one.
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
 | `mcblock` | what block is actually there; survey or search a region |
 | `mcbore` | cut a tunnel through a mass, finding both ends itself |
+| `mcshape` | build a sphere, dome, cylinder, torus, ramp and nine more |
+| `mcmark` | read a build marked out with blocks placed in the world |
 | `mcdoing` | name the current job, so progress lines mean something |
 | `mctrace` | follow a connected run of pipe, cable or rail; optionally convert it |
 | `mcfill` | bulk region edits, sliced past the 32768-block fill limit |
