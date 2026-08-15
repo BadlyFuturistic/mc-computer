@@ -5,6 +5,7 @@
 #   ./deploy.sh --prompt     prompt only (no service restart needed for tools)
 #   ./deploy.sh --no-restart copy everything, leave the service running old code
 #   ./deploy.sh --setup      also run the privileged installer (asks for sudo)
+#   ./deploy.sh --personas   replace deployed personas that differ from the repo
 #
 # Secrets are never transferred. The API key and RCON password live only in
 # /etc/mcbot on the server, installed once by setup/mcbot-setup.sh.
@@ -17,11 +18,13 @@ STAGE=/tmp/mcbot-stage
 PROMPT_ONLY=false
 RESTART=true
 RUN_SETUP=false
+FORCE_PERSONAS=false
 for arg in "$@"; do
     case "$arg" in
         --prompt)     PROMPT_ONLY=true ;;
         --no-restart) RESTART=false ;;
         --setup)      RUN_SETUP=true ;;
+        --personas)   FORCE_PERSONAS=true ;;
         *) echo "unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -73,9 +76,16 @@ ssh -t "$HOST" "
     sudo install -o root -g root -m 644 $STAGE/runas.py              /opt/mcbot/runas.py &&
     sudo install -d -o root -g root -m 755 /opt/mcbot/personas &&
     for f in $STAGE/personas/*.md; do
-        # Never overwrite a persona that already exists — they are edited in place.
-        [ -e /opt/mcbot/personas/\$(basename \$f) ] ||
-            sudo install -o root -g root -m 644 \$f /opt/mcbot/personas/ ;
+        b=\$(basename \$f); d=/opt/mcbot/personas/\$b
+        if [ ! -e \$d ]; then
+            sudo install -o root -g root -m 644 \$f \$d && echo \"    + \$b new\"
+        elif ! cmp -s \$f \$d; then
+            if [ "$FORCE_PERSONAS" = true ]; then
+                sudo install -o root -g root -m 644 \$f \$d && echo \"    ~ \$b replaced\"
+            else
+                echo \"    ! \$b differs from the deployed copy; use --personas to replace it\"
+            fi
+        fi
     done &&
     sudo /opt/mcbot/venv/bin/python /opt/mcbot/config.py &&
     sudo install -o root -g root -m 644 $STAGE/minecraft-computer.md /opt/mcbot/minecraft-computer.md &&
