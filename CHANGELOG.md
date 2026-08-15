@@ -5,6 +5,38 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.18.0 — Minecraft 26.2 (NeoForge)
+
+**In one hour the assistant told players that biodiesel, magic wood and a car did not exist
+on this server. All three did.** It guessed `car:biodiesel_bucket`, one underscore from the
+real `car:bio_diesel_bucket`, and read the resulting `Unknown item` as proof the item was
+absent rather than proof the guess was wrong. Nothing on the host could tell it otherwise:
+there was no way to ask what an id actually is. The player gave the buckets to himself with
+`/give` and asked again, and got the same denial.
+
+- New `mcitem`: the real id for an item or block a player named. It reads the `en_us.json`
+  lang file inside every installed mod, which maps an id to the display name a player would
+  actually say, so "bio diesel bucket" resolves to `car:bio_diesel_bucket`. Spacing is
+  normalised away, because the word that started the incident was "biodiesel" and it has to
+  match "Bio Diesel Bucket".
+- The whole index — 18,788 ids across 180 namespaces — is rebuilt on every run, in about a
+  third of a second. There is no cache to go stale after a mod change, and none to write:
+  the daemon's only writable path is `/var/lib/mcbot`, which the admin cannot read, so a
+  cached index would have needed a sudoers entry to work for both.
+- `mcitem check <id>` confirms one id against the live server, using a selector that matches
+  no player so the probe parses the id and gives it to nobody. This settles the two things
+  the lang index cannot: vanilla ids, which ship in the client jar and are not installed
+  here, and whether something with a display name can be given at all — `car:bio_diesel` is
+  a fluid block with no item form.
+- Searching for a common word matches hundreds of ids, so results are ranked in tiers with
+  the exact display name first, and the total is printed above the rows. A bare substring
+  test buries the answer: "car" is inside "keycards" and "scarecrow".
+- The prompt gains an `<item_ids>` section, and `<structures>` now says that `mcbuild list`
+  is the structure catalog alone. The car was refused on the strength of that list, which
+  knows nothing about items.
+- `mcpave` and `mcrepave` were missing from the tool table in `README.md`. They shipped in
+  0.16.0.
+
 ## 0.17.0 — Minecraft 26.2 (NeoForge)
 
 **The prompt told the assistant that its own reply text reached nobody, that the server

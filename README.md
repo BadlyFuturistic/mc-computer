@@ -194,7 +194,10 @@ for things no data file records, such as which base is the important one.
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
 | `mcblock` | what block is actually there; survey or search a region |
+| `mcitem` | the real id for an item or block a player named |
 | `mcbore` | cut a tunnel through a mass, finding both ends itself |
+| `mcpave` | carry a carriageway on from the end of a road |
+| `mcrepave` | restore a road surface by cloning an intact slice along |
 | `mcshape` | build a sphere, dome, cylinder, torus, ramp and nine more |
 | `mcmark` | read a build marked out with blocks placed in the world |
 | `mcpersona` | list, show and switch the assistant's voice |

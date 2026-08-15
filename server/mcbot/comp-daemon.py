@@ -183,6 +183,7 @@ _STEPS = (
     ("mcblock survey",  "working out what the area is made of"),
     ("mcblock find",    "searching for that block"),
     ("mcblock",         "checking what is actually there"),
+    ("mcitem",          "looking up what that is called"),
     ("mcbore",          "cutting through to the far side"),
     ("mctrace",         "following the run to see where it goes"),
     ("mcbuild",         "placing the structure"),

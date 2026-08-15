@@ -261,6 +261,32 @@ Sign text: `data get block <x> <y> <z>` on the sign block.
 {{LOCAL_LORE}}
 </locations>
 
+<item_ids>
+Never guess a namespaced id. A wrong guess and a thing that genuinely does not exist give
+you the same reply from `mccmd` — `Unknown item` — so a near miss reads exactly like proof
+the thing is absent.
+
+  /opt/mc/mcitem <what the player called it>   the real id, and its display name
+  /opt/mc/mcitem check <id>                    whether that exact id can be given
+
+`mcitem` searches the lang file inside every installed mod, so it matches the words players
+actually use: "bio diesel bucket" finds `car:bio_diesel_bucket`, and the spacing they chose
+does not matter. Run it before any `give`, and before you tell anyone something is not here.
+
+Only mods are indexed. Vanilla ids are not, so settle one of those with
+`mcitem check oak_boat` rather than a search.
+
+A player asked for buckets of biodiesel. Three guessed ids came back `Unknown item`, a grep
+of the mods directory found nothing — jars are ZIP archives, so grep cannot see the text
+inside them — and he was told no such item existed on the server. It was
+`car:bio_diesel_bucket`, one underscore from the first guess. In the same hour "magic wood"
+was called impossible while `biomesoplenty:magic_wood` sat installed, and a car was refused
+on the strength of `mcbuild list`, which is the structure catalog and knows nothing about
+items.
+
+Say something does not exist here only after `mcitem` has failed to find it.
+</item_ids>
+
 <reading_blocks>
 RCON cannot tell you what a block is. Its only block read is `execute if block <id>`, which
 tests an id you already guessed and answers yes or no — so a wrong guess and empty ground
@@ -410,6 +436,10 @@ there before dropping a castle on someone's house.
 Nothing suitable in the catalog: say it is not available — never as a missing file (see
 disclosure) — then build something modest by hand or say it cannot be done. A small
 correct structure beats a large malformed one.
+
+`list` is the structure catalog and nothing else. It says nothing about whether an item or
+a block exists, so a player asking for a car or a boat is not answered by it — search
+`mcitem` before you tell them there is none.
 </structures>
 
 <tunnels>

@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""mcitem — the real id for an item or block a player named.
+
+  mcitem <search terms>                       ids matching what the player called it
+  mcitem check <id>                           confirm one id against the live server
+
+  mcitem bio diesel bucket        -> car:bio_diesel_bucket
+  mcitem biodiesel                the spacing a player uses does not matter
+  mcitem magic wood               -> biomesoplenty:magic_wood
+  mcitem check car:bio_diesel_bucket   whether that exact id can be given
+
+  --limit <n>        rows to print, default 15
+  --namespace <ns>   only ids from that mod
+  --items            items only
+  --blocks           blocks only
+
+Never guess a namespaced id. A guess that is wrong and a thing that does not exist
+produce the same answer from `mccmd`: `Unknown item`. That is what let the assistant
+tell a player there was no biodiesel on this server. The real id was
+`car:bio_diesel_bucket`; the guess had missed it by one underscore. It said the same
+of magic wood, which is `biomesoplenty:magic_wood`, and of a car, from a mod with 281
+ids installed.
+
+Grepping the mods directory does not work either, and fails the same silent way. Mod
+jars are ZIP archives, so `grep -r` cannot see the text inside them and `find -iname`
+matches only filenames. No hits reads as proof of absence.
+
+Ids come from the `en_us.json` lang file in each jar, which maps an id to the display
+name a player would actually say. The whole index is rebuilt on every run, in about a
+third of a second, so it can never be stale after a mod change.
+
+Two things the index cannot tell you, both of which `check` settles:
+
+  * Vanilla ids are absent. `assets/minecraft/lang/en_us.json` ships in the client
+    jar, not the server install.
+  * A lang entry is not proof that something can be given. `car:bio_diesel` is a
+    fluid block with a display name and no item form.
+"""
+import json
+import os
+import re
+import sys
+import zipfile
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mc")
+from mcrcon import Rcon, RconError  # noqa: E402
+
+MODS = Path(os.environ.get("MCBOT_MODS", "/opt/mc/data/mods"))
+
+LANG = re.compile(r"assets/([^/]+)/lang/en_us\.json")
+
+# A player who cannot be matched, so the probe parses the id and then stops. Anything
+# that actually gave the item would put it in somebody's inventory.
+NOBODY = "@a[name=__mcitem_nobody__]"
+
+
+def take(args, flag, cast=str, default=None):
+    if flag in args:
+        i = args.index(flag)
+        value = cast(args[i + 1])
+        del args[i:i + 2]
+        return value
+    return default
+
+
+def squash(text):
+    """Fold a name to letters and digits, so the spacing a player chose stops
+    mattering. Without this "biodiesel" does not match "Bio Diesel Bucket" — and
+    that is the word the player typed first."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def build_index():
+    """Every id in every installed mod, as {id: (display, {kinds})}.
+
+    A jar that cannot be opened is skipped rather than fatal, and so is one with no
+    lang file: 62 of the 237 jars installed here carry none, which is normal for
+    libraries and data-only packs. One unreadable jar must not hide the other 236.
+    """
+    if not MODS.is_dir():
+        sys.exit(f"no mods directory at {MODS} — set MCBOT_MODS if it moved")
+
+    index = {}
+    for jar in sorted(MODS.glob("*.jar")):
+        try:
+            archive = zipfile.ZipFile(jar)
+        except (zipfile.BadZipFile, OSError):
+            continue
+        with archive:
+            for entry in archive.namelist():
+                if not LANG.fullmatch(entry):
+                    continue
+                try:
+                    table = json.loads(archive.read(entry).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                    continue
+                if not isinstance(table, dict):
+                    continue
+                for key, display in table.items():
+                    if not isinstance(display, str):
+                        continue
+                    parts = key.split(".")
+                    if len(parts) != 3 or parts[0] not in ("item", "block"):
+                        continue
+                    # Only three parts: a fourth is a tooltip or description line
+                    # (item.<ns>.<path>.desc), never an id of its own.
+                    kind, namespace, path = parts
+                    if not namespace or not path:
+                        continue
+                    ident = f"{namespace}:{path}"
+                    known = index.get(ident)
+                    if known is None:
+                        index[ident] = (display, {kind})
+                    else:
+                        known[1].add(kind)
+    return index
+
+
+def score(query, ident, display):
+    """Rank tiers, best first. None means no match at all.
+
+    Tiers exist because a bare substring test buries the answer: "car" is inside
+    "keycards" and "scarecrow", and there are 281 real car ids to get past.
+    """
+    wanted = query.lower().strip()
+    shown = display.lower()
+    path = ident.split(":", 1)[-1]
+    squashed = squash(query)
+    terms = [t for t in re.split(r"[^a-z0-9]+", wanted) if t]
+
+    if shown == wanted:
+        return 0
+    if squash(display) == squashed or squash(path) == squashed:
+        return 1
+    if terms and all(t in shown.split() for t in terms):
+        return 2
+    if squashed and squashed in squash(display):
+        return 3
+    if squashed and squashed in squash(path):
+        return 4
+    if terms and all(t in squash(display) or t in squash(path) for t in terms):
+        return 5
+    return None
+
+
+def report_search(index, query, limit, namespace, kinds):
+    """Every id is scored; only the printing is limited.
+
+    Leading with the total is what stops a narrowed view reading as the whole
+    answer — the rule `mcblock find` was fixed to follow after two tunnels were
+    bored short from a truncated result.
+    """
+    hits = []
+    for ident, (display, found) in index.items():
+        if namespace and not ident.startswith(f"{namespace}:"):
+            continue
+        if kinds and not (found & kinds):
+            continue
+        rank = score(query, ident, display)
+        if rank is not None:
+            hits.append((rank, len(display), ident, display, found))
+    hits.sort()
+
+    if not hits:
+        where = f" in {namespace}" if namespace else ""
+        print(f"no item or block matching {query!r}{where}")
+        print("nothing here is vanilla — only mods are indexed. "
+              "For a vanilla id use `mcitem check <id>`.")
+        return 1
+
+    print(f"{len(hits):,} match(es)")
+    shown = hits[:limit]
+    width = max(len(h[2]) for h in shown)
+    for _, _, ident, display, found in shown:
+        kind = "+".join(sorted(found))
+        print(f"  {ident:<{width}}  {kind:<11}  {display}")
+    if len(hits) > limit:
+        print(f"  ... {len(hits) - limit:,} more not shown — raise --limit, "
+              f"or add a word to narrow it")
+    return 0
+
+
+def report_check(ident):
+    """Ask the server itself, without giving the item to anyone.
+
+    The selector matches no player, so the command parses the id and then stops.
+    This is the only way to settle a vanilla id, which the lang index never holds.
+    """
+    if ":" not in ident:
+        ident = f"minecraft:{ident}"
+    try:
+        with Rcon() as rcon:
+            out = rcon.command(f"give {NOBODY} {ident} 1")
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+    if "Unknown item" in out or "<--[HERE]" in out:
+        print(f"{ident} is not an item on this server — nothing registers it, "
+              f"or it is a block with no item form")
+        return 1
+    if "No player was found" in out:
+        print(f"{ident} is a real item and can be given")
+        return 0
+    # Anything else is the server saying something this tool has not seen before.
+    # Report it rather than guessing which way it meant.
+    print(f"{ident}: unexpected reply from the server — {out}")
+    return 1
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+
+    limit = take(args, "--limit", int, 15)
+    namespace = take(args, "--namespace", str, None)
+    kinds = set()
+    for flag, kind in (("--items", "item"), ("--blocks", "block")):
+        if flag in args:
+            kinds.add(kind)
+            args = [a for a in args if a != flag]
+
+    if not args:
+        sys.exit(__doc__)
+
+    if args[0] == "check":
+        if len(args) != 2:
+            sys.exit("check takes one id, for example: mcitem check car:bio_diesel_bucket")
+        sys.exit(report_check(args[1]))
+
+    if limit < 1:
+        sys.exit("--limit must be at least 1")
+
+    query = " ".join(args)
+    if not squash(query):
+        sys.exit("give something to search for")
+
+    sys.exit(report_search(build_index(), query, limit, namespace, kinds))
+
+
+if __name__ == "__main__":
+    main()
