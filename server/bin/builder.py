@@ -109,6 +109,29 @@ def split(box, cap: int = MAX_BLOCKS_PER_FILL):
         yield (x1, sy, z1, x2, min(sy + step_y - 1, y2), z2)
 
 
+def falling_above(reader, cells) -> set:
+    """Sand and gravel resting directly on blocks that are about to be removed.
+
+    Whatever is above the hole comes down with it, and keeps coming down: the column
+    empties from the ground all the way to the surface, so a fill under a desert or a
+    gravel bank damages the landscape above as well as burying what was dug out.
+    """
+    import region
+
+    return {(x, y + 1, z) for (x, y, z) in cells
+            if (x, y + 1, z) not in cells and region.falls(reader.block(x, y + 1, z))}
+
+
+def falling_over_box(reader, box) -> set:
+    """The same question for a solid box, without expanding it into cells."""
+    import region
+
+    x1, _, z1, x2, y2, z2 = box
+    return {(x, y2 + 1, z)
+            for x in range(x1, x2 + 1) for z in range(z1, z2 + 1)
+            if region.falls(reader.block(x, y2 + 1, z))}
+
+
 def bounds(cells):
     xs = [c[0] for c in cells]
     ys = [c[1] for c in cells]

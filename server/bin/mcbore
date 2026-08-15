@@ -13,6 +13,7 @@
   --height <n>       inside height                     (default 3)
   --floor <y>        floor level; default is the ground the player stands on
   --line <block>     line the walls and ceiling with this
+  --support <block>  cap the ceiling only, when sand or gravel sits above
   --floor-too        line the floor as well (off by default; roads have their own)
   --light <block>    put lights in the ceiling
   --every <n>        light spacing along the tunnel    (default 5)
@@ -128,6 +129,27 @@ def block_cells(box):
             for z in range(z1, z2 + 1)}
 
 
+def ceiling_cells(inside, along_x: bool):
+    """The layer directly over the tunnel — what holds up whatever is above it."""
+    x1, y1, z1, x2, y2, z2 = inside
+    if along_x:
+        return {(x, y2 + 1, z)
+                for x in range(x1, x2 + 1) for z in range(z1 - 1, z2 + 2)}
+    return {(x, y2 + 1, z)
+            for z in range(z1, z2 + 1) for x in range(x1 - 1, x2 + 2)}
+
+
+def loose_above(reader, inside, along_x: bool):
+    """Blocks over the tunnel that will fall the moment the tunnel is hollowed out.
+
+    Sand and gravel are held up by whatever is under them and nothing else. Cut a
+    tunnel through a desert and the ceiling does not stay put: it pours into the
+    tunnel, and the hole it leaves runs all the way to the surface, so the desert
+    above is wrecked as well. Clearing the spill afterwards does not undo either.
+    """
+    return {c for c in ceiling_cells(inside, along_x) if region.falls(reader.block(*c))}
+
+
 def lining_cells(inside, along_x: bool, floor_too: bool):
     """The walls and ceiling around a tunnel — and nothing else.
 
@@ -196,6 +218,7 @@ def main() -> None:
     height = take("--height", int, 3)
     floor_y = take("--floor", int)
     line = take("--line")
+    support = take("--support")
     light = take("--light")
     every = take("--every", int, 5)
     limit = take("--max", int, 160)
@@ -248,18 +271,41 @@ def main() -> None:
         if last >= limit:
             print(f"warning: still solid at the {limit}-block limit — raise --max",
                   file=sys.stderr)
-        if dry:
-            return
-
         ctx = f"execute in {dimension} run "
         dx, dz = FACINGS[facing]
         interior = block_cells(inside)
-        lining = lining_cells(inside, dx != 0, floor_too) if line else set()
+        loose = loose_above(reader, inside, dx != 0)
+
+        if line:
+            lining = lining_cells(inside, dx != 0, floor_too)
+        elif support and loose:
+            lining, line = ceiling_cells(inside, dx != 0), support
+        else:
+            lining = set()
+
+        # Checked before the dry run returns: "this would bury the tunnel in sand" is
+        # precisely what a dry run is asked to find out.
+        if loose and not lining:
+            sys.exit(
+                f"refusing: {len(loose)} block(s) of sand or gravel sit directly over "
+                f"this tunnel, and would fall into it the moment it is hollowed out — "
+                f"taking the ground above with them.\n"
+                f"  Give --line <block> to line it, or --support <block> to cap the "
+                f"ceiling only. Either one is put in place before anything is removed.")
+        if loose:
+            print(f"holding up {len(loose)} block(s) of falling material overhead")
+        if dry:
+            return
+
         changed = 0
         with Rcon() as rcon:
-            changed += builder.write(rcon, dimension, interior, "minecraft:air")
+            # The ceiling goes in *before* the tunnel is hollowed out. Clearing first
+            # and lining afterwards leaves a window where nothing is holding the roof
+            # up, and sand does not wait: it falls into the tunnel and keeps falling,
+            # which is how gravel ended up all over the road on an earlier run.
             if lining:
                 changed += builder.write(rcon, dimension, lining, line)
+            changed += builder.write(rcon, dimension, interior, "minecraft:air")
             if light:
                 ceiling = inside[4] + 1
                 load = (inside[0] - MARGIN * 16, inside[2] - MARGIN * 16,

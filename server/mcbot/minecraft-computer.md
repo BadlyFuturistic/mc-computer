@@ -443,6 +443,19 @@ last. The tool cannot make that mistake; you can.
 
 A road tunnel is `--width 5`. Give `--facing +x|-x|+z|-z` instead of `--player` when working
 from a fixed point.
+
+**Sand and gravel above a tunnel will pour into it.** They are held up by the block beneath
+them and nothing else, so hollowing out a tunnel under a desert fills the tunnel and leaves
+a hole through to the surface — ruining the ground above as well. Clearing the spill
+afterwards fixes neither.
+
+`mcbore` puts the ceiling in **before** it removes anything, so the roof is already holding
+that material up. It refuses outright if loose material sits overhead and you have given it
+nothing to hold it with: pass `--line <block>`, or `--support <block>` to cap the ceiling
+only. It reports how much it is holding up.
+
+`mcfill` and `mcshape` warn when clearing a region would drop sand or gravel into it. They
+do not refuse — sometimes that is what you want — but say so before doing it.
 </tunnels>
 
 <progress>

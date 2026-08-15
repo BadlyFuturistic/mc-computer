@@ -115,6 +115,28 @@ def validate(r, block, replace, dimension):
                 f"there, and `mcblock find <text> <box>` locates it.")
 
 
+def warn_falling(box, block, dimension):
+    """Say so when a fill would pull the ground out from under sand or gravel.
+
+    Only when the box is being emptied: replacing solid rock with other solid rock
+    holds everything up just as well, and a warning there would be noise.
+    """
+    if block.split(":")[-1] not in ("air", "cave_air", "void_air"):
+        return
+    try:
+        import builder
+        reader = region.Reader(dimension)
+        reader.flush()
+        loose = builder.falling_over_box(reader, box)
+    except (region.RegionError, RconError, OSError):
+        return
+    if loose:
+        print(f"warning: {len(loose)} block(s) of sand or gravel sit directly on top "
+              f"of this region and will fall into it, leaving a hole through to the "
+              f"surface. Fill the layer above with something solid first if that "
+              f"matters.", file=sys.stderr)
+
+
 def preflight(box, replace, dimension):
     """Check the filter actually matches something inside the box.
 
@@ -167,6 +189,8 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
         # here" is exactly what a dry run is asked to find out.
         validate(r, block, replace, dimension)
         preflight((x1, y1, z1, x2, y2, z2), replace, dimension)
+        warn_falling((min(x1, x2), min(y1, y2), min(z1, z2),
+                      max(x1, x2), max(y1, y2), max(z1, z2)), block, dimension)
         if dry:
             return 0
         for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):

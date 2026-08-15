@@ -5,6 +5,26 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.13.0 — Minecraft 26.2 (NeoForge)
+
+**Boring a tunnel under a desert filled it with sand and left a hole through to the
+surface.** Sand and gravel are held up by the block beneath them and nothing else, and
+`mcbore` cleared the tunnel first and lined it afterwards — so between those two steps
+nothing was holding the roof up. Gravel had already come down onto a finished road this way.
+
+- The lining is now placed **before** the tunnel is hollowed out, so the ceiling is already
+  carrying whatever sits on it. The fix is an ordering one; no extra work is done.
+- `mcbore` refuses when loose material is overhead and nothing has been given to hold it,
+  and says what to pass. `--support <block>` caps the ceiling without lining the walls.
+  Checked before `--dry-run` returns, which is when it is wanted.
+- `mcfill` and `mcshape` warn when clearing a region would drop sand or gravel into it.
+  They do not refuse, and stay silent when placing solid blocks, which supports it anyway.
+- `region.falls()` decides what falls. Matched by exact name: "sandstone" contains "sand"
+  and does not fall, and a substring test would brace solid rock while sand poured through.
+
+Measured on the tunnel that prompted this: 72 blocks of sand sit in the ceiling layer alone,
+with 140 more above it.
+
 ## 0.12.0 — Minecraft 26.2 (NeoForge)
 
 **Teleporting resolves the destination itself.** `mctp` took coordinates only, so the

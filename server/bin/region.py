@@ -384,6 +384,25 @@ PASSABLE_SUFFIX = (
 )
 
 
+# Blocks that fall when whatever holds them up is taken away. Matched exactly, never by
+# substring: "sandstone" contains "sand" and does not fall, and getting that wrong would
+# have tools bracing solid rock while real sand poured through.
+GRAVITY = {
+    "sand", "red_sand", "suspicious_sand", "gravel", "suspicious_gravel",
+    "anvil", "chipped_anvil", "damaged_anvil", "dragon_egg", "pointed_dripstone",
+    "scaffolding",
+}
+GRAVITY_SUFFIX = ("_concrete_powder",)
+
+
+def falls(name: str | None) -> bool:
+    """True if this block drops once the block beneath it is gone."""
+    if not name:
+        return False
+    short = name.split(":", 1)[-1]
+    return short in GRAVITY or short.endswith(GRAVITY_SUFFIX)
+
+
 def passable(name: str | None) -> bool:
     """True if this block would not stop someone walking through.
 

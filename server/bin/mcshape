@@ -271,6 +271,18 @@ def main() -> None:
               f"{' — shell ' + str(thickness) + ' thick' if hollow else ''}")
         print(f"extent: x {x1}..{x2}  y {y1}..{y2}  z {z1}..{z2}")
 
+        if block.split(":")[-1] in ("air", "cave_air", "void_air"):
+            try:
+                reader = region.Reader(dimension)
+                reader.flush()
+                loose = builder.falling_above(reader, cells)
+                if loose:
+                    print(f"warning: {len(loose)} block(s) of sand or gravel rest on "
+                          f"this shape and will fall once it is cleared",
+                          file=sys.stderr)
+            except (region.RegionError, RconError, OSError):
+                pass
+
         if len(cells) > WARN_VOLUME and not force:
             sys.exit(f"refusing: {len(cells):,} blocks will lag the server. "
                      f"Make it smaller, or pass --force if this is intended.")
