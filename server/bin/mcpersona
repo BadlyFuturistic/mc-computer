@@ -70,6 +70,8 @@ def main() -> None:
               f"{'' if current in have else '  (missing — falling back to the file text)'}")
         who = "any player" if config.truthy("PLAYERS_CAN_CHANGE_PERSONA") else "the admin only"
         print(f"changeable by: {who}")
+        if issue := config.problem():
+            print(f"\nwarning: {issue}", file=sys.stderr)
 
     elif cmd == "show":
         name = rest[0] if rest else active_name(db)
@@ -79,6 +81,11 @@ def main() -> None:
 
     elif cmd in ("set", "reset"):
         admin = os.environ.get("MCBOT_ADMIN", "")
+        if issue := config.problem():
+            # The setting is being withheld because it could not be read, not because
+            # the admin said so. Saying which is the difference between a fixable
+            # problem and a baffling refusal.
+            print(f"note: {issue}", file=sys.stderr)
         if not config.truthy("PLAYERS_CAN_CHANGE_PERSONA"):
             if not by:
                 sys.exit("refused: only the admin may change the persona here, and no "

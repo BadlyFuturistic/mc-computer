@@ -5,7 +5,7 @@ carries out what they ask — items, structures, teleports, weather, questions a
 world — and stays quiet otherwise. It runs on the Minecraft host as an unprivileged
 service with no Docker access and two writable directories.
 
-**Version 0.2 — targets Minecraft 26.2 (NeoForge).** See [Version compatibility](#version-compatibility)
+**Targets Minecraft 26.2 (NeoForge).** See [Version compatibility](#version-compatibility)
 before running it on anything else; several things it depends on are version-specific
 and fail *silently* when they change.
 
@@ -197,6 +197,7 @@ for things no data file records, such as which base is the important one.
 | `mcbore` | cut a tunnel through a mass, finding both ends itself |
 | `mcshape` | build a sphere, dome, cylinder, torus, ramp and nine more |
 | `mcmark` | read a build marked out with blocks placed in the world |
+| `mcpersona` | list, show and switch the assistant's voice |
 | `mcdoing` | name the current job, so progress lines mean something |
 | `mctrace` | follow a connected run of pipe, cable or rail; optionally convert it |
 | `mcfill` | bulk region edits, sliced past the 32768-block fill limit |

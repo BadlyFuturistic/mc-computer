@@ -46,6 +46,53 @@ def read_json(path: Path) -> dict:
         return {}
 
 
+def mcbot_can_read(path: Path) -> tuple[bool, str]:
+    """Whether the *service account* can read a file — not whether we can.
+
+    This tool normally runs as the admin, who has their own access, so opening the file
+    here proves nothing about the bot. The answer has to come from the permissions, and
+    it has to account for the mask: a file's group bits *are* its ACL mask, so a
+    named-user entry can be listed while granting nothing at all.
+    """
+    out = sh("getfacl", "-p", str(path))
+    if not out:
+        return False, "cannot read its permissions"
+
+    entries, mask = {}, None
+    for line in out.splitlines():
+        line = line.split("\t")[0].strip()          # drop any #effective comment
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        if len(parts) < 3:
+            continue
+        kind, who, perms = parts[0], parts[1], parts[2]
+        if kind == "mask":
+            mask = perms
+        else:
+            entries[(kind, who)] = perms
+
+    if "r" in entries.get(("other", ""), ""):
+        return True, "world-readable"
+
+    def effective(perms: str) -> bool:
+        return "r" in perms and (mask is None or "r" in mask)
+
+    if ("user", "mcbot") in entries:
+        if effective(entries[("user", "mcbot")]):
+            return True, "granted by ACL"
+        return False, "the ACL entry for mcbot is masked out by the group bits"
+
+    try:
+        import grp
+        group = grp.getgrgid(path.stat().st_gid).gr_name
+    except (OSError, KeyError, ImportError):
+        group = "?"
+    if group == "mcbot" and effective(entries.get(("group", ""), "")):
+        return True, "group mcbot"
+    return False, f"group is {group}, which gives mcbot no access"
+
+
 def main() -> None:
     # --- service -----------------------------------------------------------
     active = sh("systemctl", "is-active", "mcbot")
@@ -58,6 +105,21 @@ def main() -> None:
     timer = sh("systemctl", "is-active", "mcbot-acl.timer")
     check("acl timer", OK if timer == "active" else WARN,
           timer or "not installed — world data will become unreadable")
+
+    # --- settings the bot is actually obeying ------------------------------
+    # A config the service cannot read is not a config. It produced no error and no
+    # log line; the bot simply ran on built-in defaults while the admin's settings sat
+    # in a file it could not open.
+    config_file = Path("/etc/mcbot/config")
+    if not config_file.exists():
+        check("config", WARN, "/etc/mcbot/config does not exist — running on defaults")
+    else:
+        readable, why = mcbot_can_read(config_file)
+        check("config", OK if readable else BAD,
+              why if readable else
+              f"mcbot cannot read /etc/mcbot/config ({why}) — every setting is being "
+              f"ignored in favour of defaults. Fix: sudo chgrp mcbot "
+              f"/etc/mcbot/config && sudo chmod 640 /etc/mcbot/config")
 
     # --- version -----------------------------------------------------------
     installed = read_json(BUILD_FILE)

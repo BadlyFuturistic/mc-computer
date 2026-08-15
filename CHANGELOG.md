@@ -5,6 +5,27 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.11.0 — Minecraft 26.2 (NeoForge)
+
+**An unreadable config was indistinguishable from a config that agreed with every
+default.** `/etc/mcbot/config` was root-owned with no access for the service account, so
+the daemon read none of it, swallowed the error and ran on built-in defaults. The admin
+had set `PLAYERS_CAN_CHANGE_PERSONA=false`; it had no effect, and nothing said so.
+
+- `config.py` returns the failure instead of discarding it. `problem()` reports what went
+  wrong and how to fix it, and `truthy()` now fails **closed** — every boolean setting here
+  grants a permission, so a file that cannot be read must not be able to hand out a
+  permission the admin withheld.
+- `mcpersona` surfaces the reason, so a refusal reads as a fixable permission problem
+  rather than an inexplicable no.
+- `mchealth` checks whether **mcbot** can read the config, not whether the caller can —
+  the tool normally runs as the admin, who has their own access, so opening the file
+  proves nothing. It reads the permissions directly and accounts for the ACL mask, since
+  a file's group bits *are* its mask and a named-user entry can be listed while granting
+  nothing. Verified against all five cases, including that mask trap.
+- README: dropped a version number in the header that had been stale since 0.2, and added
+  `mcpersona` to the tool table.
+
 ## 0.10.0 — Minecraft 26.2 (NeoForge)
 
 **Shapes, and marking a build out in the world instead of reading coordinates aloud.**

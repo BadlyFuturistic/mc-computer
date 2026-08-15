@@ -35,8 +35,18 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 }
 
 
-def read() -> dict[str, str]:
-    """Current settings, with defaults filled in for anything missing."""
+def _load() -> tuple[dict[str, str], str]:
+    """Settings, plus a description of why they might not be the real ones.
+
+    A config that is present but unreadable used to be indistinguishable from a config
+    that agrees with every default, because the error was swallowed. On this server the
+    file was root-owned with no group for the service account, so the bot read none of
+    it and quietly ran on defaults — including PLAYERS_CAN_CHANGE_PERSONA, which
+    defaults to permissive. The admin had set it to false and it had no effect.
+
+    So the failure is now returned rather than discarded, and callers decide what a
+    missing answer means.
+    """
     values = {k: v[0] for k, v in DEFAULTS.items()}
     for path in (CONFIG, LEGACY):
         if not path.exists():
@@ -48,18 +58,43 @@ def read() -> dict[str, str]:
                     continue
                 key, _, val = line.partition("=")
                 values[key.strip()] = val.strip()
-        except (OSError, PermissionError):
-            pass
+        except OSError as e:
+            return values, (
+                f"{path} exists but could not be read ({e.strerror or e}). Every "
+                f"setting is falling back to its built-in default, so anything set "
+                f"in that file is being ignored. Fix with: "
+                f"chgrp mcbot {path} && chmod 640 {path}")
         break
-    return values
+    return values, ""
+
+
+def read() -> dict[str, str]:
+    """Current settings, with defaults filled in for anything missing."""
+    return _load()[0]
+
+
+def problem() -> str:
+    """Empty when the config was read properly, otherwise what went wrong."""
+    return _load()[1]
 
 
 def get(key: str, default: str | None = None) -> str:
-    return read().get(key, default if default is not None else DEFAULTS.get(key, ("",))[0])
+    values = _load()[0]
+    return values.get(key, default if default is not None else DEFAULTS.get(key, ("",))[0])
 
 
-def truthy(key: str) -> bool:
-    return get(key).strip().lower() in ("1", "true", "yes", "on")
+def truthy(key: str, when_unreadable: bool = False) -> bool:
+    """A boolean setting, defaulting to *off* when the config cannot be read.
+
+    Every boolean here grants a permission, so an unreadable file must not be able to
+    hand out a permission the admin withheld. Failing closed makes that impossible;
+    the cost is that a genuine permission looks withheld until the file is readable,
+    which is the error worth having and is reported loudly by problem().
+    """
+    values, issue = _load()
+    if issue:
+        return when_unreadable
+    return values.get(key, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def ensure() -> list[str]:
