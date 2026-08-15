@@ -235,6 +235,11 @@ It slices the region, loads each slice, runs the fills, and releases the chunks.
 So "replace the forest with glass" is tags, not a guess at which wood types are present.
 Without `--replace` it fills everything solid, including air.
 
+Some plants stand on the block beneath them — kelp, sugar cane, bamboo, cactus. Convert
+one from underneath and everything above it breaks and drifts off, leaving a single
+converted block in a bare strand. `mcfill` handles those top-down automatically; you do
+not need to do anything, but do not work around it by issuing fills yourself.
+
 **Trees are one call, never two:**
 
   /opt/mc/mcfill <box> --trees --leaves-to <block> --logs-to <block>

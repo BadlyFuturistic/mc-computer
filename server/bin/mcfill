@@ -11,6 +11,13 @@
   --dimension <dim>    default minecraft:overworld
   --force              proceed past the size warning
   --dry-run            report what would run, change nothing
+  --top-down           convert highest blocks first, one layer at a time
+  --bottom-up          force the normal order even for stacked plants
+
+Kelp, sugar cane, bamboo and cactus stand on the block below them, so converting one
+from underneath breaks everything above it — the rest drops and drifts away. /fill
+works upward from the low corner, which is exactly the wrong order, so those filters
+switch to top-down automatically. Vines hang the other way and want the normal order.
 
 Trees, in one call and in the safe order:
 
@@ -44,20 +51,43 @@ MAX_CHUNKS_LOADED = 200          # forceload caps around 256; stay clear of it
 WARN_VOLUME = 4_000_000          # above this, require --force
 
 
-def slices(x1, y1, z1, x2, y2, z2):
-    """Split the box into pieces small enough for one /fill each."""
+# Plants that stand on the block beneath them. Replacing one from below breaks
+# everything above it, which then drops and drifts away — so these must be converted
+# from the top down, one layer at a time.
+STACKED_FROM_BELOW = (
+    "kelp", "kelp_plant", "sugar_cane", "bamboo", "cactus",
+    "twisting_vines", "twisting_vines_plant",
+)
+
+
+def slices(x1, y1, z1, x2, y2, z2, top_down=False):
+    """Split the box into pieces small enough for one /fill each.
+
+    top_down yields one-block-tall layers, highest first. /fill works upward from the
+    low corner of whatever it is given, so a taller slab would recreate the very
+    bottom-up order that breaks stacked plants.
+    """
     x1, x2 = sorted((x1, x2)); y1, y2 = sorted((y1, y2)); z1, z2 = sorted((z1, z2))
-    # Pick a footprint that keeps each slice's chunk count loadable, then choose the
-    # slab height that fills the block budget.
     step = 48
     for sx in range(x1, x2 + 1, step):
         for sz in range(z1, z2 + 1, step):
             ex, ez = min(sx + step - 1, x2), min(sz + step - 1, z2)
             area = (ex - sx + 1) * (ez - sz + 1)
+            if top_down:
+                for sy in range(y2, y1 - 1, -1):
+                    yield sx, sy, sz, ex, sy, ez
+                continue
             dy = max(1, MAX_BLOCKS_PER_FILL // area)
             for sy in range(y1, y2 + 1, dy):
                 ey = min(sy + dy - 1, y2)
                 yield sx, sy, sz, ex, ey, ez
+
+
+def needs_top_down(replace: str | None) -> bool:
+    if not replace:
+        return False
+    name = replace.split(":")[-1].lstrip("#").lower()
+    return name in STACKED_FROM_BELOW
 
 
 def validate(r, block, replace, dimension):
@@ -81,12 +111,16 @@ def validate(r, block, replace, dimension):
                 f"the name used in game. /opt/mc/mcblocks <search> lists real ids.")
 
 
-def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label=""):
+def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
+             top_down=None):
     """One region change, sliced under the fill cap. Returns blocks changed."""
-    pieces = list(slices(x1, y1, z1, x2, y2, z2))
+    if top_down is None:
+        top_down = needs_top_down(replace)
+    pieces = list(slices(x1, y1, z1, x2, y2, z2, top_down))
     volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
     print(f"{label}{volume:,} blocks in {len(pieces)} fill(s)"
-          f"{' matching ' + replace if replace else ''}")
+          f"{' matching ' + replace if replace else ''}"
+          f"{' — top-down, one layer at a time' if top_down else ''}")
     if dry:
         return 0
 
@@ -127,6 +161,7 @@ def main() -> None:
     force = "--force" in args
     dry = "--dry-run" in args
     trees = "--trees" in args
+    top_down = True if "--top-down" in args else (False if "--bottom-up" in args else None)
     opts = {
         "replace": None, "dimension": "minecraft:overworld",
         "leaves-to": None, "logs-to": None,
@@ -177,7 +212,8 @@ def main() -> None:
         if ("log" in target or "stem" in target) and not force:
             print("note: replacing logs on their own makes nearby natural leaves decay. "
                   "Use --trees to convert leaves first if that matters.", file=sys.stderr)
-        run_fill(x1, y1, z1, x2, y2, z2, block, opts["replace"], opts["dimension"], dry)
+        run_fill(x1, y1, z1, x2, y2, z2, block, opts["replace"], opts["dimension"], dry,
+                 top_down=top_down)
     except ValueError as e:
         sys.exit(str(e))
     except RconError as e:

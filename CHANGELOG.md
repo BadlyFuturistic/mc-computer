@@ -5,6 +5,19 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.4.2 — Minecraft 26.2 (NeoForge)
+
+- Kelp, sugar cane, bamboo and cactus convert top-down, one layer at a time. /fill
+  works upward from the low corner, so converting a strand from underneath broke
+  everything above it: a single sponge left stranded and the rest drifted away.
+- Trees convert leaves before logs via `mcfill --trees`, since natural leaves decay
+  once no log remains near them.
+- `mcfill` validates the block and filter before slicing, and stops after three
+  consecutive failures. An invented mod block id previously ground through 129 slices
+  over eight minutes, changing nothing and blocking every other request.
+- Background commands are forbidden. A backgrounded command outlives its turn, so its
+  output landed in the next player's turn and was reported to the wrong person.
+
 ## 0.4.1 — Minecraft 26.2 (NeoForge)
 
 - Chat sent while the server log rotated was silently dropped. The tail seeked to the
