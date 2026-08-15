@@ -5,6 +5,11 @@
 
   mcrepave 63 -2355 239 -2324 243        repave the strip a tunnel just cleared
 
+  <y>                the level the markings sit at; the road surface is <y> - 1
+  --sample <n>       how much intact road to read when working out the repeat
+  --dry-run          report what would be copied, change nothing
+  --dimension <dim>  default minecraft:overworld
+
 Painted road markings are directional blocks, and their facing cannot be worked out by
 reasoning about it. Placing them by name alone gives whatever the default rotation is —
 markings across the road instead of along it. Setting a facing by hand fixes one side and
@@ -12,26 +17,41 @@ mirrors the other, because the two edge lines of a road face opposite ways. Both
 happened repeatedly, each time costing several rounds of the player saying it is still
 wrong.
 
-Nothing here decides what a block should look like. For every column across the road it
+Nothing here decides what a block should look like. For every column along the road it
 finds the intact surface just beyond the damaged span and clones it in, so the exact block
 state comes from a block that is already correct — facing, mirroring and all.
 
 The pattern along the road is preserved too. Each column is sampled to find how it
 repeats: an unbroken edge line repeats every block, a dashed centre line every fifth. The
-copy is taken from the position matching the same phase, so dashes line up across the join
-instead of restarting at the seam.
+copy is taken from the position matching the same phase, so dashes line up across the
+join instead of restarting at the seam.
+
+What counts as road is read from the carriageway, never assumed. The surface is the row
+directly under the markings — the one row boring a tunnel does not touch — so it is still
+there to be read, and a position counts as road only if it stands on that surface. Both
+ends of every copy are held to it: nothing is read from a place that is not road, and
+nothing is written to one.
+
+That check is the whole safety of this tool. Without it, "is there anything here?" was the
+only test, an absent chunk was the only thing that failed it, and solid rock passed
+easily. Pointed just past the mouth of a tunnel that had stopped at its search limit
+inside a hill, it read the hillside, called it road, and cloned 1190 blocks of stone, coal
+ore and dirt into the tunnel that had just been cleared — reporting every one as a
+success.
 """
 import sys
+from collections import Counter
 
 sys.path.insert(0, "/opt/mc")
 import region  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SAMPLE = 30           # how much intact road to read when working out the repeat
+SETTLE = 0.6          # seconds for force-loaded chunks to become writable
 
 
-def surface(name: str | None) -> str | None:
-    """The road itself, ignoring whatever is lying on it.
+def marking(name: str | None) -> str | None:
+    """The painted marking at a spot, ignoring whatever is lying on it.
 
     Snow, grass and the like drift onto a road and are not part of its markings. Left
     in, they break the repeat: a centre line dashed every five blocks reads as a
@@ -49,9 +69,51 @@ def repeat_length(names: list[str | None]) -> int:
     return max(1, n)
 
 
-def source_for(anchor: int, pos: int, period: int) -> int:
-    """The intact position holding what `pos` should contain, in the same phase."""
-    return anchor - ((anchor - pos) % period)
+def road_surface(reader, y, x1, z1, x2, z2) -> str | None:
+    """What this road is paved with, read from under the strip being repaved.
+
+    Markings sit on top of the carriageway, so the row at y - 1 is the road itself. A
+    bore clears the markings and leaves that row alone, which makes it the one piece of
+    evidence still standing after the damage: it says what the road is made of without
+    anyone having to name it, and it keeps working when the road is asphalt in one
+    place and something else in another.
+
+    The commonest solid block wins. A strip that runs off the end of the road picks up
+    stone and dirt along the way, and those must not be allowed to redefine the road.
+    """
+    counts: Counter = Counter()
+    for x in range(x1, x2 + 1):
+        for z in range(z1, z2 + 1):
+            name = reader.block(x, y - 1, z)
+            if name and not region.passable(name):
+                counts[name] += 1
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def on_road(reader, y, x, z, surface: str) -> bool:
+    """Whether this spot is carriageway, decided by what holds it up."""
+    return reader.block(x, y - 1, z) == surface
+
+
+def at(t: int, across: int, along_x: bool) -> tuple[int, int]:
+    """World x, z from a position along the road and one across it."""
+    return (t, across) if along_x else (across, t)
+
+
+def sample_road(reader, y, anchor, step, across, along_x, length, surface):
+    """Read outward from `anchor`, stopping where the road stops.
+
+    Returns block ids nearest-first. The walk ends at the first position that is not
+    standing on the road, so a sample cannot run off the end of the carriageway and
+    keep reading whatever is beyond it.
+    """
+    names = []
+    for i in range(length):
+        x, z = at(anchor + step * i, across, along_x)
+        if not on_road(reader, y, x, z, surface):
+            break
+        names.append(reader.block(x, y, z))
+    return names
 
 
 def main() -> None:
@@ -78,80 +140,144 @@ def main() -> None:
     x1, x2 = sorted((x1, x2))
     z1, z2 = sorted((z1, z2))
 
+    # A road runs the long way down the strip that damaged it. Sampling across the
+    # short way instead reads the walls of the tunnel rather than the road beyond its
+    # mouths, and a tunnel bored north to south got its floor filled with its own
+    # lining. A square strip says nothing either way, and x is as good a guess as any.
+    along_x = (x2 - x1) >= (z2 - z1)
+    lo, hi = (x1, x2) if along_x else (z1, z2)
+    acrosses = range(z1, z2 + 1) if along_x else range(x1, x2 + 1)
+
     try:
         reader = region.Reader(dimension)
         reader.flush()
 
-        plans = []          # (source_x, target_x, z, block name)
-        for z in range(z1, z2 + 1):
-            # Read intact road on both sides of the damage, nearest block first.
-            before = [reader.block(x1 - 1 - i, y, z) for i in range(sample_len)]
-            after = [reader.block(x2 + 1 + i, y, z) for i in range(sample_len)]
-            if any(b is not None for b in before):
-                anchor, names = x1 - 1, before
-            elif any(b is not None for b in after):
-                anchor, names = x2 + 1, after
-            else:
-                print(f"z={z}: no intact road either side — skipped", file=sys.stderr)
-                continue
+        surface = road_surface(reader, y, x1, z1, x2, z2)
+        if surface is None:
+            sys.exit(
+                f"nothing solid under y={y} anywhere in this strip, so there is no road "
+                f"here to match. Check the level: markings sit at the tunnel floor and "
+                f"the carriageway is the row below it.")
+        print(f"road surface: {surface} (read from y={y - 1} under the strip)")
+        print(f"road runs along {'x' if along_x else 'z'}")
 
-            clean = [surface(n) for n in names]
+        plans = []          # (source t, target t, across, block name)
+        off_road = 0
+        for across in acrosses:
+            # Read the intact road past both ends of the damage, nearest block first,
+            # and work from whichever side offers more of it.
+            low = sample_road(reader, y, lo - 1, -1, across, along_x,
+                              sample_len, surface)
+            high = sample_road(reader, y, hi + 1, +1, across, along_x,
+                               sample_len, surface)
+            if not low and not high:
+                print(f"{'z' if along_x else 'x'}={across}: no intact road either side "
+                      f"— skipped", file=sys.stderr)
+                continue
+            if len(high) > len(low):
+                anchor, step, names = hi + 1, +1, high
+            else:
+                anchor, step, names = lo - 1, -1, low
+
+            clean = [marking(n) for n in names]
             period = repeat_length(clean)
 
             # One source block per position in the repeat, chosen from the sample so
             # that what gets cloned is a marking that is already correct rather than
             # whatever happened to be lying at that spot.
-            template: dict[int, tuple[str, int] | None] = {}
-            for phase in range(period):
-                template[phase] = None
-                for i in range(phase, len(clean), period):
-                    if clean[i]:
-                        # Sample runs away from the damage, so index i is anchor - i.
-                        template[phase] = (clean[i], anchor - i)
-                        break
+            template: dict[int, tuple[str, int] | None] = {p: None
+                                                           for p in range(period)}
+            for i, name in enumerate(clean):
+                if not name:
+                    continue
+                # Phase is measured in world coordinates from the anchor, so the copy
+                # and the place it lands agree regardless of which side was sampled.
+                # Deriving it from the sample index instead put the source of every
+                # copy taken from the far side back inside the damage.
+                t = anchor + step * i
+                if template[(t - anchor) % period] is None:
+                    template[(t - anchor) % period] = (name, t)
 
-            for x in range(x1, x2 + 1):
-                entry = template[(anchor - x) % period]
-                plans.append((entry[1] if entry else None, x, z,
+            for t in range(lo, hi + 1):
+                x, z = at(t, across, along_x)
+                if not on_road(reader, y, x, z, surface):
+                    off_road += 1
+                    continue
+                entry = template[(t - anchor) % period]
+                plans.append((entry[1] if entry else None, t, across,
                               entry[0] if entry else None))
+
             kinds = sorted({v[0] for v in template.values() if v})
-            print(f"z={z}: repeats every {period} block(s)"
+            print(f"{'z' if along_x else 'x'}={across}: {len(names)} block(s) of intact "
+                  f"road {'ahead' if step > 0 else 'behind'}, repeats every {period} "
+                  f"block(s)"
                   f"{' — ' + ', '.join(k.split(':')[-1] for k in kinds) if kinds else ' — bare'}")
 
+        if off_road:
+            print(f"{off_road} block(s) skipped: not standing on {surface}. That much "
+                  f"of this strip is not road — it still needs paving.", file=sys.stderr)
         if not plans:
-            sys.exit("nothing to copy from — is the strip right?")
-        print(f"{len(plans)} block(s) to repave from {len(set(p[2] for p in plans))} column(s)")
+            sys.exit(
+                f"refusing: found no intact {surface} either side of this strip to copy "
+                f"from. Repaving needs a piece of finished road to match; there is none "
+                f"here, so there is nothing to say what the markings should be.")
+        print(f"{len(plans)} block(s) to repave from "
+              f"{len(set(p[2] for p in plans))} column(s)")
         if dry:
-            for src, x, z, name in plans[:10]:
-                print(f"  {x} {y} {z}  <- {src} ({name})")
+            for src, t, across, name in plans[:10]:
+                x, z = at(t, across, along_x)
+                sx, sz = at(src, across, along_x) if src is not None else (None, None)
+                print(f"  {x} {y} {z}  <- {sx} {sz} ({name})"
+                      if src is not None else f"  {x} {y} {z}  <- air")
             if len(plans) > 10:
                 print(f"  ... and {len(plans) - 10} more")
             return
 
         ctx = f"execute in {dimension} run "
+        pad = sample_len + 2
+        load = (x1 - pad, z1 - pad, x2 + pad, z2 + pad)
         with Rcon() as rcon:
-            rcon.command(f"{ctx}forceload add {x1 - sample_len} {z1 - 2} "
-                         f"{x2 + sample_len} {z2 + 2}")
+            rcon.command(f"{ctx}forceload add {load[0]} {load[1]} {load[2]} {load[3]}")
             try:
                 import time
-                time.sleep(0.6)
-                done = 0
-                for src, x, z, _ in plans:
+                time.sleep(SETTLE)
+                marked = cleared = already = failed = 0
+                for src, t, across, _ in plans:
+                    x, z = at(t, across, along_x)
                     if src is None:
                         # Nothing marked at this phase — clear it rather than leaving
                         # whatever the damage left behind.
                         out = rcon.command(f"{ctx}setblock {x} {y} {z} minecraft:air")
-                        done += "Changed the block" in out
+                        if "Changed the block" in out:
+                            cleared += 1
+                        elif "Could not set the block" in out:
+                            # Already empty. Minecraft calls setting a block to what it
+                            # already is a failure, and counting it as one turned a
+                            # clean run over bare carriageway into "363 of 825" — a
+                            # number that reads as damage and invites someone to go
+                            # looking for it. A position that is already right is done.
+                            already += 1
+                        else:
+                            failed += 1
                         continue
                     # clone, not setblock: the whole point is to carry the block state
                     # across rather than name it, since naming it is what keeps failing.
-                    out = rcon.command(f"{ctx}clone {src} {y} {z} {src} {y} {z} {x} {y} {z}")
+                    sx, sz = at(src, across, along_x)
+                    out = rcon.command(f"{ctx}clone {sx} {y} {sz} {sx} {y} {sz} "
+                                       f"{x} {y} {z}")
                     if "cloned" in out.lower():
-                        done += 1
+                        marked += 1
+                    else:
+                        failed += 1
             finally:
-                rcon.command(f"{ctx}forceload remove {x1 - sample_len} {z1 - 2} "
-                             f"{x2 + sample_len} {z2 + 2}")
-        print(f"repaved {done} of {len(plans)} block(s)")
+                rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
+                             f"{load[2]} {load[3]}")
+        print(f"repaved {marked + cleared + already} of {len(plans)} block(s): "
+              f"{marked} marking(s) cloned, {cleared} cleared, "
+              f"{already} already right")
+        if failed:
+            sys.exit(f"{failed} block(s) would not take the change. The strip is part "
+                     f"repaved; re-run once you know why.")
 
     except region.RegionError as e:
         sys.exit(str(e))

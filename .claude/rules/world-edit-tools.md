@@ -44,6 +44,15 @@ hand. An intact block nearby already carries the right state, and `clone` copies
 exactly. This converts a reasoning problem into a lookup and is the highest-leverage rule
 here. `mcrepave` does it for road surfaces.
 
+**A presence check is not an identity check.** `mcrepave` asked "is there a block here?"
+to decide it had found intact road. Air is a block and only an ungenerated chunk reads as
+absent, so the test passed on open sky and on solid rock. It copied a hillside into the
+tunnel it had just been bored through, 1190 blocks, and reported every one as a success.
+Before copying from somewhere, confirm that place is what you think it is — and confirm it
+from the world. Road markings stand on the carriageway, so the block underneath says
+whether a spot is road; that check costs one extra read and holds for both the place
+copied from and the place copied to.
+
 **Order operations so nothing loses its support.** Four incidents, one shape: something
 was removed before the thing depending on it was in place. Leaves decay without logs;
 kelp and sugar cane stand on the block below; sand and gravel fall. Line a tunnel *before*

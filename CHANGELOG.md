@@ -5,6 +5,36 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.15.1 — Minecraft 26.2 (NeoForge)
+
+**`mcrepave` filled a fresh tunnel with the hillside it had just been bored through, and
+reported all 1190 blocks as a success.** The only test for "is this intact road?" was
+whether a block was present at all, and an absent chunk was the only thing that failed it.
+Aimed just past the mouth of a tunnel that had stopped at its 160-block search limit inside
+a hill, it read stone, coal ore and dirt, called them road markings, and cloned them across
+the floor of the tunnel. The road surface underneath was never touched — the damage was one
+layer of rock lying on top of an intact carriageway — but the tunnel read as solid again.
+
+- `mcrepave` now reads what the road is paved with from the row under the damaged strip,
+  the one row boring does not touch, and a position counts as road only if it stands on
+  that surface. Both ends of every copy are held to it: nothing is read from a place that
+  is not road, and nothing is written to one. A sample stops where the carriageway stops.
+- It refuses, non-zero, when no intact road can be found either side, rather than copying
+  whatever happens to be there. Verified against both cases: no surface under the strip at
+  all, and a surface with nothing intact beyond either end.
+- The road axis comes from the strip instead of being assumed to be x. Sampling always ran
+  along x, so a tunnel bored north to south would have read its own walls; it now samples
+  along whichever way the strip is long, and says which it chose.
+- Fixed the source coordinate when copying from the far side, which pointed back into the
+  damage instead of away from it. Unreachable before, because the old presence test never
+  rejected the near side.
+- Counting no longer treats a no-op as a failure. Minecraft calls setting a block to what
+  it already is a failure, so a clean run over bare carriageway reported "363 of 825" — a
+  number that reads as damage. Cloned, cleared and already-right are now counted separately.
+- `mcbore --repave` reports a failed repave instead of printing `bored N blocks` and
+  exiting zero, and no longer discards mcrepave's per-column warnings when it printed
+  anything at all on stdout. That is what let this run back to the player as finished work.
+
 ## 0.15.0 — Minecraft 26.2 (NeoForge)
 
 **A tunnel was bored a block north of the road, because it was centred on the player rather

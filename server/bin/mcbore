@@ -402,6 +402,7 @@ def main() -> None:
                     rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
                                  f"{load[2]} {load[3]}")
 
+        repaved = None
         if repave:
             # The tunnel floor is where road markings live, so boring always takes
             # them out. Rebuilding them by name gets the rotation wrong; mcrepave
@@ -409,11 +410,23 @@ def main() -> None:
             out = subprocess.run(
                 ["/opt/mc/mcrepave", str(inside[1]), str(inside[0]), str(inside[2]),
                  str(inside[3]), str(inside[5])], capture_output=True, text=True)
-            print(out.stdout.strip() or out.stderr.strip())
+            # Both streams, always. mcrepave says which columns it could not match on
+            # stderr, and printing that only when stdout was empty threw away every
+            # partial failure — the run that mattered reported nothing but success.
+            for stream in (out.stdout, out.stderr):
+                if stream.strip():
+                    print(stream.strip())
+            repaved = out.returncode == 0
 
         print(f"bored {length} blocks"
               + (f", lined with {line}" if line else "")
               + (f", {light} every {every}" if light else ""))
+        if repaved is False:
+            # A tunnel with no markings is a job half done, not a job done. Saying
+            # "bored N blocks" and stopping let a failed repave read as a success all
+            # the way back to the player.
+            sys.exit("the tunnel is bored, but repaving failed — see above. The floor "
+                     "is bare; nothing has been put back.")
 
     except region.RegionError as e:
         sys.exit(str(e))
