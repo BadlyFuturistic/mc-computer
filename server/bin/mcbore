@@ -14,6 +14,7 @@
   --floor <y>        floor level; default is the ground the player stands on
   --line <block>     line the walls and ceiling with this
   --support <block>  cap the ceiling only, when sand or gravel sits above
+  --repave           put the floor markings back afterwards (see mcrepave)
   --floor-too        line the floor as well (off by default; roads have their own)
   --light <block>    put lights in the ceiling
   --every <n>        light spacing along the tunnel    (default 5)
@@ -219,6 +220,7 @@ def main() -> None:
     floor_y = take("--floor", int)
     line = take("--line")
     support = take("--support")
+    repave = "--repave" in args
     light = take("--light")
     every = take("--every", int, 5)
     limit = take("--max", int, 160)
@@ -320,6 +322,15 @@ def main() -> None:
                 finally:
                     rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
                                  f"{load[2]} {load[3]}")
+
+        if repave:
+            # The tunnel floor is where road markings live, so boring always takes
+            # them out. Rebuilding them by name gets the rotation wrong; mcrepave
+            # copies the intact road either side instead.
+            out = subprocess.run(
+                ["/opt/mc/mcrepave", str(inside[1]), str(inside[0]), str(inside[2]),
+                 str(inside[3]), str(inside[5])], capture_output=True, text=True)
+            print(out.stdout.strip() or out.stderr.strip())
 
         print(f"bored {length} blocks"
               + (f", lined with {line}" if line else "")

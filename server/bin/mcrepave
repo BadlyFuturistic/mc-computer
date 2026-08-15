@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""mcrepave — put a road surface back by copying the intact road either side of it.
+
+  mcrepave <y> <x1> <z1> <x2> <z2> [--dimension <dim>] [--sample 30] [--dry-run]
+
+  mcrepave 63 -2355 239 -2324 243        repave the strip a tunnel just cleared
+
+Painted road markings are directional blocks, and their facing cannot be worked out by
+reasoning about it. Placing them by name alone gives whatever the default rotation is —
+markings across the road instead of along it. Setting a facing by hand fixes one side and
+mirrors the other, because the two edge lines of a road face opposite ways. Both have
+happened repeatedly, each time costing several rounds of the player saying it is still
+wrong.
+
+Nothing here decides what a block should look like. For every column across the road it
+finds the intact surface just beyond the damaged span and clones it in, so the exact block
+state comes from a block that is already correct — facing, mirroring and all.
+
+The pattern along the road is preserved too. Each column is sampled to find how it
+repeats: an unbroken edge line repeats every block, a dashed centre line every fifth. The
+copy is taken from the position matching the same phase, so dashes line up across the join
+instead of restarting at the seam.
+"""
+import sys
+
+sys.path.insert(0, "/opt/mc")
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+SAMPLE = 30           # how much intact road to read when working out the repeat
+
+
+def surface(name: str | None) -> str | None:
+    """The road itself, ignoring whatever is lying on it.
+
+    Snow, grass and the like drift onto a road and are not part of its markings. Left
+    in, they break the repeat: a centre line dashed every five blocks reads as a
+    pattern twenty-nine long, and the markings come back in the wrong places.
+    """
+    return None if (name is None or region.passable(name)) else name
+
+
+def repeat_length(names: list[str | None]) -> int:
+    """The shortest length at which this column repeats."""
+    n = len(names)
+    for p in range(1, n):
+        if all(names[i] == names[i + p] for i in range(n - p)):
+            return p
+    return max(1, n)
+
+
+def source_for(anchor: int, pos: int, period: int) -> int:
+    """The intact position holding what `pos` should contain, in the same phase."""
+    return anchor - ((anchor - pos) % period)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    dimension = take("--dimension", str, "minecraft:overworld")
+    sample_len = take("--sample", int, SAMPLE)
+    dry = "--dry-run" in args
+    nums = [a for a in args if not a.startswith("--")]
+    if len(nums) != 5:
+        sys.exit(__doc__)
+    try:
+        y, x1, z1, x2, z2 = (int(v) for v in nums)
+    except ValueError:
+        sys.exit("all five values must be whole numbers")
+    x1, x2 = sorted((x1, x2))
+    z1, z2 = sorted((z1, z2))
+
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+
+        plans = []          # (source_x, target_x, z, block name)
+        for z in range(z1, z2 + 1):
+            # Read intact road on both sides of the damage, nearest block first.
+            before = [reader.block(x1 - 1 - i, y, z) for i in range(sample_len)]
+            after = [reader.block(x2 + 1 + i, y, z) for i in range(sample_len)]
+            if any(b is not None for b in before):
+                anchor, names = x1 - 1, before
+            elif any(b is not None for b in after):
+                anchor, names = x2 + 1, after
+            else:
+                print(f"z={z}: no intact road either side — skipped", file=sys.stderr)
+                continue
+
+            clean = [surface(n) for n in names]
+            period = repeat_length(clean)
+
+            # One source block per position in the repeat, chosen from the sample so
+            # that what gets cloned is a marking that is already correct rather than
+            # whatever happened to be lying at that spot.
+            template: dict[int, tuple[str, int] | None] = {}
+            for phase in range(period):
+                template[phase] = None
+                for i in range(phase, len(clean), period):
+                    if clean[i]:
+                        # Sample runs away from the damage, so index i is anchor - i.
+                        template[phase] = (clean[i], anchor - i)
+                        break
+
+            for x in range(x1, x2 + 1):
+                entry = template[(anchor - x) % period]
+                plans.append((entry[1] if entry else None, x, z,
+                              entry[0] if entry else None))
+            kinds = sorted({v[0] for v in template.values() if v})
+            print(f"z={z}: repeats every {period} block(s)"
+                  f"{' — ' + ', '.join(k.split(':')[-1] for k in kinds) if kinds else ' — bare'}")
+
+        if not plans:
+            sys.exit("nothing to copy from — is the strip right?")
+        print(f"{len(plans)} block(s) to repave from {len(set(p[2] for p in plans))} column(s)")
+        if dry:
+            for src, x, z, name in plans[:10]:
+                print(f"  {x} {y} {z}  <- {src} ({name})")
+            if len(plans) > 10:
+                print(f"  ... and {len(plans) - 10} more")
+            return
+
+        ctx = f"execute in {dimension} run "
+        with Rcon() as rcon:
+            rcon.command(f"{ctx}forceload add {x1 - sample_len} {z1 - 2} "
+                         f"{x2 + sample_len} {z2 + 2}")
+            try:
+                import time
+                time.sleep(0.6)
+                done = 0
+                for src, x, z, _ in plans:
+                    if src is None:
+                        # Nothing marked at this phase — clear it rather than leaving
+                        # whatever the damage left behind.
+                        out = rcon.command(f"{ctx}setblock {x} {y} {z} minecraft:air")
+                        done += "Changed the block" in out
+                        continue
+                    # clone, not setblock: the whole point is to carry the block state
+                    # across rather than name it, since naming it is what keeps failing.
+                    out = rcon.command(f"{ctx}clone {src} {y} {z} {src} {y} {z} {x} {y} {z}")
+                    if "cloned" in out.lower():
+                        done += 1
+            finally:
+                rcon.command(f"{ctx}forceload remove {x1 - sample_len} {z1 - 2} "
+                             f"{x2 + sample_len} {z2 + 2}")
+        print(f"repaved {done} of {len(plans)} block(s)")
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

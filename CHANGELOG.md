@@ -5,6 +5,26 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.14.0 — Minecraft 26.2 (NeoForge)
+
+**Road markings kept coming back wrong, three separate ways, because their facing was being
+reasoned about instead of copied.** Placed by name alone they take the default rotation and
+sit across the road. Given a facing by hand they come out right on one edge and mirrored on
+the other, since the two edges of a road face opposite ways. Each round cost the player
+telling the assistant it was still wrong and watching it probe block states by hand.
+
+- New `mcrepave`: for every column across a damaged strip it finds the intact surface just
+  beyond it and clones it in, so the block state comes from a block that is already
+  correct — facing, mirroring and all. Nothing decides what a block should look like.
+- The repeat along the road is matched too. Each column is sampled for its period, so an
+  unbroken edge line repeats every block and a dashed centre line every fifth, and the copy
+  is taken from the matching phase — dashes line up across the join rather than restarting.
+- Surface litter is ignored when reading the period. Snow drifting onto a road made a
+  five-block dash pattern measure as twenty-nine, which put the markings back in the wrong
+  places.
+- `mcbore --repave` runs it after boring. The tunnel floor is exactly where markings live,
+  so every bore through a road removes them.
+
 ## 0.13.0 — Minecraft 26.2 (NeoForge)
 
 **Boring a tunnel under a desert filled it with sand and left a hole through to the

@@ -456,6 +456,23 @@ only. It reports how much it is holding up.
 
 `mcfill` and `mcshape` warn when clearing a region would drop sand or gravel into it. They
 do not refuse — sometimes that is what you want — but say so before doing it.
+
+**Never write a block state by hand for a mod block.** Road markings, rails, stairs and
+panes carry a facing, and it cannot be worked out by reasoning about it. Naming the block
+alone gives its default rotation — markings across the road instead of along it. Setting a
+facing by hand fixes one side and mirrors the other, because the two edges of a road face
+opposite ways. Both have happened, repeatedly, each time taking several rounds of a player
+saying it is still wrong.
+
+Copy an existing correct block instead, with `clone`. The state comes across with it.
+
+  /opt/mc/mcrepave <y> <x1> <z1> <x2> <z2>
+
+That is what mcrepave does for a road surface: for every column it finds the intact road
+just outside the damaged span and clones it in, matching the repeat as well, so a dashed
+centre line keeps its spacing across the join. `mcbore --repave` runs it automatically,
+which is the right way to bore a road tunnel — the floor is where the markings live, so
+boring always takes them out.
 </tunnels>
 
 <progress>
