@@ -226,8 +226,17 @@ It slices the region, loads each slice, runs the fills, and releases the chunks.
   #minecraft:base_stone_overworld            the rock of a hillside, not the grass
   minecraft:water                            just water
 
-So "replace the forest with glass" is two calls with tags, not a guess at which wood
-types are present. Without `--replace` it fills everything solid, including air.
+So "replace the forest with glass" is tags, not a guess at which wood types are present.
+Without `--replace` it fills everything solid, including air.
+
+**Trees are one call, never two:**
+
+  /opt/mc/mcfill <box> --trees --leaves-to <block> --logs-to <block>
+
+Naturally grown leaves decay once no log remains near them, so converting the logs first
+destroys the leaves before you can convert them — and the player sees half a result.
+`--trees` does leaves first and cannot be got the wrong way round. Use it whenever a
+request touches both. If you convert logs on their own it will warn you for this reason.
 
 It refuses above four million blocks unless given `--force`. That limit is about server
 lag, so relay the refusal and suggest a smaller region rather than forcing it.

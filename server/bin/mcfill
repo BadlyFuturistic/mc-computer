@@ -12,6 +12,19 @@
   --force              proceed past the size warning
   --dry-run            report what would run, change nothing
 
+Trees, in one call and in the safe order:
+
+  mcfill <box> --trees --leaves-to <block> --logs-to <block>
+
+  --leaves-to <block>  what leaves become        (default #minecraft:leaves)
+  --logs-to <block>    what logs become          (default #minecraft:logs)
+  --leaves-from <f>    override the leaf filter
+  --logs-from <f>      override the log filter
+
+Order matters and is not obvious: naturally grown leaves decay once no log remains
+within range, so converting the logs first makes the leaves disappear before you can
+convert them. --trees always does leaves first, which is why it exists.
+
 Minecraft caps /fill at 32768 blocks, so a real request — a forest, a hillside — is
 dozens of commands with the slicing worked out by hand. Getting that arithmetic wrong
 leaves gaps or overlaps, and doing it a command at a time is slow and expensive.
@@ -47,67 +60,94 @@ def slices(x1, y1, z1, x2, y2, z2):
                 yield sx, sy, sz, ex, ey, ez
 
 
+def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label=""):
+    """One region change, sliced under the fill cap. Returns blocks changed."""
+    pieces = list(slices(x1, y1, z1, x2, y2, z2))
+    volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
+    print(f"{label}{volume:,} blocks in {len(pieces)} fill(s)"
+          f"{' matching ' + replace if replace else ''}")
+    if dry:
+        return 0
+
+    ctx = f"execute in {dimension} run "
+    suffix = f" replace {replace}" if replace else ""
+    changed, failed = 0, 0
+    with Rcon() as r:
+        for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
+            r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
+            out = r.command(f"{ctx}fill {sx} {sy} {sz} {ex} {ey} {ez} {block}{suffix}")
+            r.command(f"{ctx}forceload remove {sx} {sz} {ex} {ez}")
+            if "Successfully filled" in out:
+                changed += int("".join(c for c in out.split("filled")[1] if c.isdigit()) or 0)
+            elif "No blocks were filled" not in out and out:
+                failed += 1
+                if failed <= 3:
+                    print(f"  slice {i}: {out[:120]}", file=sys.stderr)
+            if i % 20 == 0:
+                print(f"  {i}/{len(pieces)} slices, {changed:,} blocks so far", flush=True)
+    print(f"{label}changed {changed:,} block(s)"
+          + (f", {failed} slice(s) failed" if failed else ""))
+    return changed
+
+
 def main() -> None:
     args = sys.argv[1:]
-    opts = {"replace": None, "dimension": "minecraft:overworld"}
     force = "--force" in args
     dry = "--dry-run" in args
-    for key in ("replace", "dimension"):
+    trees = "--trees" in args
+    opts = {
+        "replace": None, "dimension": "minecraft:overworld",
+        "leaves-to": None, "logs-to": None,
+        "leaves-from": "#minecraft:leaves", "logs-from": "#minecraft:logs",
+    }
+    for key in list(opts):
         flag = f"--{key}"
         if flag in args:
             i = args.index(flag)
             opts[key] = args[i + 1]
             del args[i:i + 2]
-    args = [a for a in args if not a.startswith("--")]
-    if len(args) != 7:
+    coords = [a for a in args if not a.startswith("--")]
+
+    if trees:
+        if len(coords) != 6:
+            sys.exit("usage: mcfill <x1> <y1> <z1> <x2> <y2> <z2> --trees "
+                     "--leaves-to <block> --logs-to <block>")
+        if not (opts["leaves-to"] and opts["logs-to"]):
+            sys.exit("--trees needs both --leaves-to and --logs-to")
+    elif len(coords) != 7:
         sys.exit(__doc__)
 
-    *coords, block = args
     try:
-        x1, y1, z1, x2, y2, z2 = (int(c) for c in coords)
+        nums = [int(c) for c in coords[:6]]
     except ValueError:
         sys.exit("coordinates must be integers")
+    x1, y1, z1, x2, y2, z2 = nums
 
     volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
-    pieces = list(slices(x1, y1, z1, x2, y2, z2))
-    print(f"{volume:,} blocks in {len(pieces)} fill(s)"
-          f"{' matching ' + opts['replace'] if opts['replace'] else ''}")
-
     if volume > WARN_VOLUME and not force:
         sys.exit(f"refusing: {volume:,} blocks is very large and will lag the server. "
                  f"Narrow the region, or pass --force if this is intended.")
-    if dry:
-        for p in pieces[:5]:
-            print(f"  would fill {p[0]} {p[1]} {p[2]} -> {p[3]} {p[4]} {p[5]}")
-        if len(pieces) > 5:
-            print(f"  ... and {len(pieces) - 5} more")
-        return
-
-    ctx = f"execute in {opts['dimension']} run "
-    suffix = f" replace {opts['replace']}" if opts["replace"] else ""
-    changed, failed = 0, 0
 
     try:
-        with Rcon() as r:
-            for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
-                # Load only this slice's chunks, then release them, so a big region
-                # never exceeds the forceload cap.
-                r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
-                out = r.command(f"{ctx}fill {sx} {sy} {sz} {ex} {ey} {ez} {block}{suffix}")
-                r.command(f"{ctx}forceload remove {sx} {sz} {ex} {ez}")
-                if "Successfully filled" in out:
-                    changed += int("".join(c for c in out.split("filled")[1] if c.isdigit()) or 0)
-                elif "No blocks were filled" not in out and out:
-                    failed += 1
-                    if failed <= 3:
-                        print(f"  slice {i}: {out[:120]}", file=sys.stderr)
-                if i % 20 == 0:
-                    print(f"  {i}/{len(pieces)} slices, {changed:,} blocks so far", flush=True)
+        if trees:
+            # Leaves first, always. Natural leaves decay once no log remains within
+            # range, so doing the logs first destroys the leaves before they can be
+            # converted. Both halves live in one command precisely so the order
+            # cannot be got wrong.
+            run_fill(x1, y1, z1, x2, y2, z2, opts["leaves-to"], opts["leaves-from"],
+                     opts["dimension"], dry, label="leaves: ")
+            run_fill(x1, y1, z1, x2, y2, z2, opts["logs-to"], opts["logs-from"],
+                     opts["dimension"], dry, label="logs:   ")
+            return
+
+        block = coords[6]
+        target = (opts["replace"] or "").lower()
+        if ("log" in target or "stem" in target) and not force:
+            print("note: replacing logs on their own makes nearby natural leaves decay. "
+                  "Use --trees to convert leaves first if that matters.", file=sys.stderr)
+        run_fill(x1, y1, z1, x2, y2, z2, block, opts["replace"], opts["dimension"], dry)
     except RconError as e:
         sys.exit(f"rcon failed: {e}")
-
-    print(f"changed {changed:,} block(s)" + (f", {failed} slice(s) failed" if failed else ""))
-    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
