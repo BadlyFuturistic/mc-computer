@@ -77,8 +77,16 @@ READY = re.compile(_SRC + r"Done \([\d.]+s\)!")
 LOGIN_DELAY_SEC = 25
 # Approval for a Fable request. Matched against the admin's raw chat by the daemon,
 # so the model cannot grant itself permission by claiming it was given.
-APPROVE_FABLE = re.compile(r"\b(approve|approved|yes|go ahead|allow)\b.*\bfable\b"
-                           r"|\bfable\b.*\b(approved?|ok|okay|yes|go ahead|allowed)\b", re.I)
+# Matched against the admin's raw chat by the daemon, so the model cannot grant itself
+# permission. Only consulted when a request is actually pending, so a bare "approve" is
+# unambiguous — requiring the word "fable" as well made the obvious reply fail.
+APPROVE_FABLE = re.compile(
+    r"^\s*(approved?|yes|yep|yeah|ok|okay|sure|go ahead|do it|allow(ed)?|confirmed)\b"
+    r"|\bfable\b.{0,20}\b(approved?|ok|okay|yes|go ahead|allowed)\b"
+    r"|\b(approve|allow)\b.{0,20}\bfable\b", re.I)
+DENY_FABLE = re.compile(
+    r"^\s*(no|nope|deny|denied|cancel|reject(ed)?|don'?t)\b"
+    r"|\bno\b.{0,20}\bfable\b", re.I)
 DEBOUNCE_SEC = 4                    # group a burst of chat into one request
 RECONNECT_SEC = 10                  # wait before re-establishing a dropped log tail
 RESULT_PREVIEW = 600                # chars of tool output kept in the readable log
@@ -595,7 +603,11 @@ async def main() -> None:
                 speaker, _, text = payload.partition(":")
                 if speaker.strip().lower() == ADMIN.lower():
                     req = memory.pending_fable(db)
-                    if req and APPROVE_FABLE.search(text):
+                    if req and DENY_FABLE.search(text):
+                        memory.deny_fable(db, req["id"])
+                        log(f"admin declined fable request #{req['id']} "
+                            f"for {req['player']}", "wake")
+                    elif req and APPROVE_FABLE.search(text):
                         memory.approve_fable(db, req["id"])
                         log(f"admin approved fable request #{req['id']} "
                             f"for {req['player']}", "wake")

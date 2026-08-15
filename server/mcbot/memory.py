@@ -220,6 +220,13 @@ def approve_fable(db, req_id: int) -> None:
     db.commit()
 
 
+def deny_fable(db, req_id: int) -> None:
+    """Mark a request as spent without approving it, so a refusal is final rather
+    than leaving it pending for something later to claim."""
+    db.execute("UPDATE fable_requests SET used_at = ? WHERE id = ?", (time.time(), req_id))
+    db.commit()
+
+
 def claim_fable(db):
     """Take an approved, unused approval. Single use, and expires after 30 minutes."""
     row = db.execute(
