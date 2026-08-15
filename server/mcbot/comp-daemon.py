@@ -156,11 +156,18 @@ def say(text: str) -> None:
 
 
 async def tail_chat(q: "asyncio.Queue[tuple[str, str]]") -> None:
-    """Follow the server log from the end, surviving log rotation on restart."""
+    """Follow the server log, surviving rotation without dropping the lines it hides."""
+    first_open = True
     while True:
         try:
             with SERVER_LOG.open("r", errors="replace") as f:
-                f.seek(0, 2)                      # start at the end; ignore history
+                # Only skip history on the very first open. After a rotation the new
+                # latest.log starts empty, so reading it from the beginning recovers
+                # anything written between the rotation and this reopen — otherwise
+                # chat sent in that window is lost with no sign that it happened.
+                if first_open:
+                    f.seek(0, 2)
+                    first_open = False
                 inode = SERVER_LOG.stat().st_ino
                 log("watching server log")
                 while True:

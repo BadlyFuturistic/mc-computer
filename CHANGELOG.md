@@ -5,6 +5,15 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.4.1 — Minecraft 26.2 (NeoForge)
+
+- Chat sent while the server log rotated was silently dropped. The tail seeked to the
+  end of the new file on reopen, discarding the ~10 second window between rotation and
+  reopen. A player's message vanished with no error, and a later "do the above request"
+  then referred to something older. Rotation now reads the new file from the start.
+- Replies are public by default. A private reply to a public question reads as being
+  ignored by everyone else in the room.
+
 ## 0.4.0 — Minecraft 26.2 (NeoForge)
 
 - `mcfill` for bulk region edits. Minecraft caps /fill at 32768 blocks, so large
