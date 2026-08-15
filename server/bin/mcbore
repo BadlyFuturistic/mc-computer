@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""mcbore — cut a tunnel through whatever is in the way, both ends found for you.
+
+  mcbore --player <name> [options]
+  mcbore <x> <y> <z> --facing <+x|-x|+z|-z> [options]
+
+  mcbore --player HangryAssassin --width 5 --line minecraft:stone_bricks \\
+         --light minecraft:glowstone --every 3
+
+  --player <name>    start at their feet, bore the way they are looking
+  --facing <dir>     direction, when no player is given
+  --width <n>        inside width, across the tunnel   (default 3)
+  --height <n>       inside height                     (default 3)
+  --floor <y>        floor level; default is the ground the player stands on
+  --line <block>     line the walls and ceiling with this
+  --floor-too        line the floor as well (off by default; roads have their own)
+  --light <block>    put lights in the ceiling
+  --every <n>        light spacing along the tunnel    (default 5)
+  --max <n>          furthest it will look ahead       (default 160)
+  --dry-run          report what it found, change nothing
+  --dimension <dim>  default minecraft:overworld
+
+Boring a tunnel by hand means working out where the hill starts and where it ends, and
+getting either wrong leaves a wall of rock across the road. The end nearest the player
+is the one usually missed, because it is behind them in scan order and easy to cut off
+a search on.
+
+This finds both ends itself. It steps forward from the start, testing the whole
+cross-section of the tunnel at each step, and takes the first blocked step as the
+entrance and the last as the far side — so an entrance right in front of the player is
+found by the same pass that finds the exit. Reading the world files makes that scan
+cost hundredths of a second.
+
+Blocks are read from the last save and written over RCON, as everywhere else.
+"""
+import math
+import re
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/opt/mc")
+import region  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+SETTLE = 0.6          # seconds for force-loaded chunks to become writable
+CLEAR_RUN = 4         # this many clear steps in a row means we are out the far side
+MARGIN = 2            # chunks of slack when force-loading
+
+FACINGS = {"+x": (1, 0), "-x": (-1, 0), "+z": (0, 1), "-z": (0, -1)}
+
+
+def facing_from_yaw(yaw: float) -> str:
+    """Minecraft yaw: 0 is +z, 90 is -x, 180 is -z, 270 is +x."""
+    y = yaw % 360
+    if y < 45 or y >= 315:
+        return "+z"
+    if y < 135:
+        return "-x"
+    if y < 225:
+        return "-z"
+    return "+x"
+
+
+def player_state(name: str):
+    """Feet position and facing, straight from the server — this must be live."""
+    out = subprocess.run(
+        ["/opt/mc/mccmd"], input=f"data get entity {name} Pos\n"
+        f"data get entity {name} Rotation\n",
+        capture_output=True, text=True).stdout
+    pos = re.search(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]", out)
+    rot = re.search(r"\[(-?[\d.]+)f", out)
+    if not pos or not rot:
+        sys.exit(f"could not read {name}'s position — are they online?")
+    x, y, z = (float(v) for v in pos.groups())
+    return x, y, z, facing_from_yaw(float(rot.group(1)))
+
+
+def cells(step_x, step_z, half, height, floor_y, along_x, from_row=0):
+    """Every block of one cross-section of the tunnel, from `from_row` upward."""
+    for w in range(-half, half + 1):
+        for h in range(from_row, height):
+            if along_x:
+                yield step_x, floor_y + h, step_z + w
+            else:
+                yield step_x + w, floor_y + h, step_z
+
+
+def find_mass(reader, start, facing, half, height, floor_y, limit):
+    """Walk forward and report (first blocked step, last blocked step).
+
+    Both ends come out of one pass, which is the whole point: the near end cannot be
+    lost to a search that stopped early, because nothing stops early.
+
+    The floor row is not counted. Roads carry a surface, painted lines, rails and
+    carpets at exactly that level, and treating those as an obstruction starts the
+    tunnel at the player's own feet and bricks up open road. What blocks a tunnel is
+    what stands at body height.
+    """
+    dx, dz = FACINGS[facing]
+    along_x = dx != 0
+    x0, z0 = start
+    enter = exit_ = None
+    clear_run = 0
+    from_row = 1 if height > 1 else 0
+    for step in range(limit + 1):
+        sx, sz = x0 + dx * step, z0 + dz * step
+        blocked = any(not region.passable(reader.block(*c))
+                      for c in cells(sx, sz, half, height, floor_y, along_x, from_row))
+        if blocked:
+            if enter is None:
+                enter = step
+            exit_ = step
+            clear_run = 0
+        elif enter is not None:
+            clear_run += 1
+            if clear_run >= CLEAR_RUN:
+                break
+    return enter, exit_
+
+
+def box_for(start, facing, first, last, half, height, floor_y, out=0):
+    """The world-space box of the tunnel, optionally grown by `out` on every side."""
+    dx, dz = FACINGS[facing]
+    ax, az = start[0] + dx * first, start[1] + dz * first
+    bx, bz = start[0] + dx * last, start[1] + dz * last
+    if dx:
+        x1, x2 = sorted((ax, bx))
+        z1, z2 = az - half, az + half
+    else:
+        z1, z2 = sorted((az, bz))
+        x1, x2 = ax - half, ax + half
+    return (x1 - out, floor_y - out, z1 - out,
+            x2 + out, floor_y + height - 1 + out, z2 + out)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    player = take("--player")
+    facing = take("--facing")
+    width = take("--width", int, 3)
+    height = take("--height", int, 3)
+    floor_y = take("--floor", int)
+    line = take("--line")
+    light = take("--light")
+    every = take("--every", int, 5)
+    limit = take("--max", int, 160)
+    dimension = take("--dimension", str, "minecraft:overworld")
+    dry = "--dry-run" in args
+    floor_too = "--floor-too" in args
+    coords = [a for a in args if not a.startswith("--")]
+
+    if width < 1 or height < 1:
+        sys.exit("--width and --height must be at least 1")
+    half = (width - 1) // 2
+
+    if player:
+        px, py, pz, looking = player_state(player)
+        facing = facing or looking
+        # Feet sit on top of the block below; the tunnel floor is the block they
+        # would walk on. Road surfaces are not always whole blocks, hence the ceil.
+        start = (round(px), round(pz))
+        if floor_y is None:
+            floor_y = math.ceil(py)
+    else:
+        if len(coords) != 3 or not facing:
+            sys.exit(__doc__)
+        try:
+            sx, sy, sz = (int(c) for c in coords)
+        except ValueError:
+            sys.exit("coordinates must be whole numbers")
+        start = (sx, sz)
+        if floor_y is None:
+            floor_y = sy
+    if facing not in FACINGS:
+        sys.exit(f"--facing must be one of: {', '.join(FACINGS)}")
+
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+
+        first, last = find_mass(reader, start, facing, half, height, floor_y, limit)
+        if first is None:
+            sys.exit(f"nothing to bore through: clear for {limit} blocks {facing} "
+                     f"from {start[0]} {floor_y} {start[1]}")
+
+        length = last - first + 1
+        inside = box_for(start, facing, first, last, half, height, floor_y)
+        print(f"facing {facing} from {start[0]} {floor_y} {start[1]}")
+        print(f"solid from {first} to {last} blocks ahead — {length} long, "
+              f"{width} wide, {height} high")
+        print(f"tunnel: x {inside[0]}..{inside[3]}  y {inside[1]}..{inside[4]}  "
+              f"z {inside[2]}..{inside[5]}")
+        if last >= limit:
+            print(f"warning: still solid at the {limit}-block limit — raise --max",
+                  file=sys.stderr)
+        if dry:
+            return
+
+        shell = box_for(start, facing, first, last, half, height, floor_y, out=1)
+        ctx = f"execute in {dimension} run "
+        dx, dz = FACINGS[facing]
+        changed = 0
+        with Rcon() as rcon:
+            rcon.command(f"{ctx}forceload add {shell[0] - MARGIN * 16} "
+                         f"{shell[2] - MARGIN * 16} {shell[3] + MARGIN * 16} "
+                         f"{shell[5] + MARGIN * 16}")
+            time.sleep(SETTLE)
+            try:
+                def fill(box, block):
+                    nonlocal changed
+                    out = rcon.command(
+                        f"{ctx}fill {box[0]} {box[1]} {box[2]} "
+                        f"{box[3]} {box[4]} {box[5]} {block}")
+                    if "Unknown block" in out or "<--[HERE]" in out:
+                        raise ValueError(f"unknown block: {block}")
+                    if "Successfully filled" in out:
+                        changed += int("".join(c for c in out.split("filled")[1]
+                                               if c.isdigit()) or 0)
+
+                if line:
+                    # Line first, then hollow it out. Filling the shell as one solid
+                    # block and clearing the inside afterwards is simpler than six
+                    # face fills, and cannot leave a seam at the corners.
+                    fill(shell, line)
+                    if not floor_too:
+                        # Put the original floor back: a road already has one.
+                        fill((shell[0], shell[1], shell[2],
+                              shell[3], shell[1], shell[5]), "minecraft:air")
+                fill(inside, "minecraft:air")
+
+                if light:
+                    ceiling = inside[4] + 1
+                    for step in range(first, last + 1, max(1, every)):
+                        lx = start[0] + dx * step
+                        lz = start[1] + dz * step
+                        rcon.command(f"{ctx}setblock {lx} {ceiling} {lz} {light}")
+            finally:
+                rcon.command(f"{ctx}forceload remove {shell[0] - MARGIN * 16} "
+                             f"{shell[2] - MARGIN * 16} {shell[3] + MARGIN * 16} "
+                             f"{shell[5] + MARGIN * 16}")
+
+        print(f"bored {length} blocks"
+              + (f", lined with {line}" if line else "")
+              + (f", {light} every {every}" if light else ""))
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except ValueError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

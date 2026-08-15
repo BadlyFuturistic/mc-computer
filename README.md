@@ -194,6 +194,8 @@ for things no data file records, such as which base is the important one.
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
 | `mcblock` | what block is actually there; survey or search a region |
+| `mcbore` | cut a tunnel through a mass, finding both ends itself |
+| `mcdoing` | name the current job, so progress lines mean something |
 | `mctrace` | follow a connected run of pipe, cable or rail; optionally convert it |
 | `mcfill` | bulk region edits, sliced past the 32768-block fill limit |
 | `mcignite` | prime TNT, finding a real TNT block near the point given |

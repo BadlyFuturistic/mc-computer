@@ -50,6 +50,7 @@ LOG_DIR = Path(os.environ.get("MCBOT_LOG_DIR", "/var/lib/mcbot/logs"))
 ADMIN_ENV = "MCBOT_ADMIN"
 PERSONA_DIR = Path(os.environ.get("MCBOT_PERSONAS", "/opt/mcbot/personas"))
 SESSION_FILE = Path(os.environ.get("MCBOT_SESSION_FILE", "/var/lib/mcbot/session.id"))
+GOAL_FILE = Path(os.environ.get("MCBOT_GOAL_FILE", "/var/lib/mcbot/doing"))
 MODEL = os.environ.get("MCBOT_MODEL", "sonnet")   # escalate to opus per-task, see mcthink
 EFFORT = os.environ.get("MCBOT_EFFORT", "low")   # low|medium|high — medium if it gets sloppy
 LIMITS_FILE = Path("/etc/mcbot/limits")            # root-owned; the bot cannot edit it
@@ -177,6 +178,7 @@ _STEPS = (
     ("mcblock survey",  "working out what the area is made of"),
     ("mcblock find",    "searching for that block"),
     ("mcblock",         "checking what is actually there"),
+    ("mcbore",          "cutting through to the far side"),
     ("mctrace",         "following the run to see where it goes"),
     ("mcbuild",         "placing the structure"),
     ("mcbag",           "looking through the backpack"),
@@ -227,8 +229,28 @@ def describe(command: str) -> str | None:
     return None
 
 
+def current_goal() -> str:
+    """What the assistant said this job is for, via mcdoing. Empty if it said nothing."""
+    try:
+        return GOAL_FILE.read_text().strip()[:90]
+    except OSError:
+        return ""
+
+
+def clear_goal() -> None:
+    try:
+        GOAL_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 async def report_progress(turn) -> None:
     """Say what is happening while a long turn runs, the way a person would.
+
+    A step on its own describes machinery — "searching for that block" means nothing to
+    someone who asked for a tunnel — so the job the assistant named through mcdoing is
+    put in front of it. The step still comes from the command actually running, so the
+    detail cannot drift from the truth even if the stated goal is vague.
 
     Deliberately quiet: nothing at all until a turn has run long enough to be worth
     explaining, then at most one line per interval, and never the same line twice in a
@@ -239,7 +261,8 @@ async def report_progress(turn) -> None:
     try:
         await asyncio.sleep(FIRST_UPDATE_SEC)
         while True:
-            step = turn.activity
+            goal, detail = current_goal(), turn.activity
+            step = f"{goal} — {detail}" if goal and detail else (goal or detail)
             if step and step != said:
                 try:
                     await asyncio.to_thread(say, f"{step}...")
@@ -381,6 +404,8 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
 
     # Runs alongside the response so players are not left watching nothing happen
     # through a long job. Cancelled however this turn ends, interruption included.
+    # The stated goal is cleared first, so a stale one cannot describe this turn.
+    clear_goal()
     reporter = asyncio.create_task(report_progress(turn))
     try:
         await client.query(prompt)
@@ -389,6 +414,7 @@ async def run_turn(client: ClaudeSDKClient, prompt: str, why: str,
             turn.handle(msg)
     finally:
         reporter.cancel()
+        clear_goal()
 
     if not turn.spoke and turn.final and turn.final != SILENT_TOKEN:
         # It answered into the void — its own text goes to this log, not to players.

@@ -108,15 +108,38 @@ def matches(reader, text, box):
 
 
 def report_find(reader, text, box, limit):
-    # islice stops the scan at the limit. Breaking out of the innermost loop by hand
-    # only ends that section, so every later chunk adds one more hit past the limit.
-    hits = list(itertools.islice(matches(reader, text, box), limit))
+    """Every match is scanned; only the printing is limited.
+
+    Stopping the scan at the limit used to hide the extent. Chunks are scanned in
+    ascending order, so a truncated result always lost the far end of whatever was
+    found — and the printed coordinates looked like the whole thing. A tunnel bored
+    from that answer stopped short at one end, every time. The scan costs
+    hundredths of a second, so there is nothing to gain by ending it early.
+    """
+    hits = list(matches(reader, text, box))
     if not hits:
         print(f"no block id containing '{text}' in that box")
         return 1
-    print(f"{len(hits)}{' (limit reached)' if len(hits) >= limit else ''} match(es):")
-    for x, y, z, name in hits:
+
+    xs = [h[0] for h in hits]
+    ys = [h[1] for h in hits]
+    zs = [h[2] for h in hits]
+    kinds = {}
+    for *_, name in hits:
+        kinds[name] = kinds.get(name, 0) + 1
+
+    # The extent comes first, because it is the answer to the question that is
+    # usually being asked: how far does this thing go?
+    print(f"{len(hits):,} match(es)")
+    print(f"extent: x {min(xs)}..{max(xs)}  y {min(ys)}..{max(ys)}  z {min(zs)}..{max(zs)}")
+    if len(kinds) > 1:
+        print("kinds: " + ", ".join(f"{n} x{c:,}"
+                                    for n, c in sorted(kinds.items(), key=lambda kv: -kv[1])))
+    for x, y, z, name in itertools.islice(hits, limit):
         print(f"  {x} {y} {z}  {name}")
+    if len(hits) > limit:
+        print(f"  ... {len(hits) - limit:,} more not shown — the extent above covers "
+              f"all {len(hits):,}")
     return 0
 
 

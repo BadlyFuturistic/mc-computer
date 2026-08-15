@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""mcdoing — say what job you are on, in the player's words.
+
+  mcdoing "cutting the tunnel through the hill"
+  mcdoing --clear
+
+While a job runs, players get an occasional progress line built from the tool actually
+running. On its own that reads as machinery: "searching for that block" means nothing
+to someone who asked for a tunnel. This supplies the other half — what the work is
+for — so the line becomes "cutting the tunnel through the hill — searching for that
+block".
+
+Say it as the player would: the outcome they asked for, not the method. Set it once
+when a job starts. It is cleared automatically at the end of every turn, so it can
+never describe the last request during the next one.
+"""
+import sys
+from pathlib import Path
+
+GOAL = Path("/var/lib/mcbot/doing")
+LIMIT = 90          # leaves room for the step, inside Minecraft's chat line
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+    try:
+        if args[0] == "--clear":
+            GOAL.unlink(missing_ok=True)
+            print("cleared")
+            return
+        text = " ".join(args).strip()[:LIMIT]
+        if not text:
+            sys.exit("nothing to say")
+        GOAL.write_text(text)
+        print(f"working on: {text}")
+    except PermissionError:
+        # Only the service account owns this directory. An admin running it by hand
+        # has nothing to label — there is no turn in progress — so say that rather
+        # than reporting a bare permission error that reads like a broken tool.
+        sys.exit("only the assistant can set this; it labels a job while one is running")
+    except OSError as e:
+        sys.exit(f"could not record it: {e}")
+
+
+if __name__ == "__main__":
+    main()

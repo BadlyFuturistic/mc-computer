@@ -365,6 +365,37 @@ class Reader:
         return bool(out.strip()), mine, out.strip() or "no match"
 
 
+# Blocks that do not count as ground standing in the way. Anything not listed is
+# treated as solid, which is the safe direction to be wrong in: a tunnel that runs a
+# block too far is harmless, one that stops short leaves a wall across the road.
+PASSABLE = {
+    "air", "cave_air", "void_air",
+    "water", "flowing_water", "bubble_column", "lava", "flowing_lava",
+    "short_grass", "tall_grass", "fern", "large_fern", "dead_bush", "leaf_litter",
+    "snow", "vine", "glow_lichen", "seagrass", "tall_seagrass", "kelp", "kelp_plant",
+    "lily_pad", "sugar_cane", "bamboo", "cobweb", "light", "structure_void", "rail",
+    "torch", "wall_torch", "soul_torch", "redstone_torch", "lantern",
+    "poppy", "dandelion", "allium", "cornflower", "azure_bluet", "oxeye_daisy",
+    "blue_orchid", "lily_of_the_valley", "wither_rose", "torchflower", "pitcher_plant",
+}
+PASSABLE_SUFFIX = (
+    "_sapling", "_flower", "_sign", "_banner", "_button", "_pressure_plate",
+    "_rail", "_carpet", "_bush", "_roots", "_sprouts", "_fungus", "_torch", "_tulip",
+)
+
+
+def passable(name: str | None) -> bool:
+    """True if this block would not stop someone walking through.
+
+    None counts as passable: an ungenerated chunk is not a wall, and treating it as
+    one would make a tunnel run off into nothing.
+    """
+    if not name:
+        return True
+    short = name.split(":", 1)[-1]
+    return short in PASSABLE or short.endswith(PASSABLE_SUFFIX)
+
+
 def _ordered(box) -> tuple[int, int, int, int, int, int]:
     x1, y1, z1, x2, y2, z2 = box
     lo_x, hi_x = sorted((x1, x2))

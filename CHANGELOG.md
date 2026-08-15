@@ -5,6 +5,39 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.9.0 — Minecraft 26.2 (NeoForge)
+
+**`mcblock find` was hiding the extent of what it found, and a tunnel was bored short
+twice because of it.** It stopped scanning at the print limit. Chunks are scanned in
+ascending order, so truncation always lost the far end — which from the player's side is
+the end nearest them — and the coordinates it did print looked like the whole thing. Asked
+to open a 1-block road tunnel to full height, the assistant read the truncated list as the
+mass's extent and left seven blocks of hill standing right in front of the player. Twice.
+
+- `find` now scans everything and limits only the printing. It leads with the true extent
+  and total count, so a truncated listing still tells the truth. The scan costs
+  hundredths of a second; ending it early bought nothing.
+- New `mcbore`: cuts a tunnel through a mass and finds both ends itself. It steps forward
+  from the player, testing the whole cross-section, and takes the first blocked step as the
+  entrance and the last as the far side — so the near end is found by the same pass as the
+  exit. It clears, lines and lights in one go. The extent arithmetic is out of the model,
+  which had got it wrong every time it was asked to do it.
+- The floor row does not count when locating the mass. Roads carry a surface, painted
+  lines, rails and carpets at exactly that level, and counting those started the tunnel at
+  the player's own feet and bricked up open road.
+- `region.passable()` decides what stands in the way. Anything unlisted counts as solid,
+  which is the safe direction: a tunnel one block too long is harmless, one that stops
+  short leaves a wall across the road.
+
+**Progress lines now say what the job is for.** A line built only from the running tool
+describes machinery — someone who asked for a tunnel was told "searching for that block".
+
+- New `mcdoing`: the assistant names the job once, in the player's words, and the line
+  becomes "cutting the tunnel through the hill — searching for that block". The detail
+  still comes from the command actually running, so it cannot drift from the truth.
+- The stated goal is cleared at the start and end of every turn, so it can never describe
+  the previous request during the next one.
+
 ## 0.8.0 — Minecraft 26.2 (NeoForge)
 
 **Fable approval now covers a job, not a single run.** A request is rarely finished in one
