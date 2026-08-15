@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS crashes (
 );
 CREATE INDEX IF NOT EXISTS idx_crash_sig ON crashes(signature);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fable_requests (
     id          INTEGER PRIMARY KEY,
     ts          REAL NOT NULL,
@@ -178,6 +183,19 @@ def set_crash_report(db, signature: str, path: str) -> None:
 def last_crash_time(db) -> float:
     row = db.execute("SELECT COALESCE(MAX(last_ts), 0) AS t FROM crashes").fetchone()
     return float(row["t"])
+
+
+def get_setting(db, key: str) -> str:
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else ""
+
+
+def set_setting(db, key: str, value: str) -> None:
+    """Runtime state the bot may change, as opposed to /etc/mcbot/config which it
+    can only read."""
+    db.execute("INSERT INTO settings (key, value) VALUES (?,?) "
+               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+    db.commit()
 
 
 def request_fable(db, player: str, what: str) -> int:

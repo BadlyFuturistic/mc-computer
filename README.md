@@ -134,6 +134,37 @@ directory, and the resulting error points at the file, not the directory.
 
 ---
 
+## Personas
+
+The assistant's voice lives in `/opt/mcbot/personas/*.md`, separate from everything it
+knows how to do. Swapping a voice is dropping in a file; it changes only how the
+assistant sounds, never what it will or will not do.
+
+    mcpersona list                      what is available, which is active
+    mcpersona set <name> --by <player>  switch
+    mcpersona reset --by <player>       back to the configured default
+
+Ships with `computer` (calm and impersonal), `plain` (no character at all) and
+`librarian`. Add your own by writing a file with `name` and `description` frontmatter
+and the voice below it.
+
+`PLAYERS_CAN_CHANGE_PERSONA` in the config decides whether anyone may switch or only the
+admin. It defaults to **true**, on the assumption that most servers would rather let
+players play with it.
+
+Deploying installs any persona that is missing and never overwrites one that exists, so
+your edits and your own personas survive upgrades.
+
+## Configuration
+
+`/etc/mcbot/config`, root-owned: the bot reads it and cannot change it. Anything the bot
+*may* change at runtime — the active persona — lives in its database instead.
+
+Deploying runs a migration that **adds keys introduced by a new version and changes
+nothing already in the file**, appending each with its default and a comment explaining
+it. A setting therefore shows up in your config rather than existing only in code, and an
+edited value is never reverted by an upgrade.
+
 ## Local world knowledge
 
 Landmarks, base names and conventions specific to your world go in

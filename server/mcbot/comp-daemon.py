@@ -27,6 +27,7 @@ import sys
 import time
 from pathlib import Path
 
+import config
 import memory
 
 from claude_agent_sdk import (
@@ -47,6 +48,7 @@ PROMPT_FILE = Path(os.environ.get("MCBOT_PROMPT", HERE / "minecraft-computer.md"
 SERVER_LOG = Path(os.environ.get("MCBOT_SERVER_LOG", "/opt/mc/data/logs/latest.log"))
 LOG_DIR = Path(os.environ.get("MCBOT_LOG_DIR", "/var/lib/mcbot/logs"))
 ADMIN_ENV = "MCBOT_ADMIN"
+PERSONA_DIR = Path(os.environ.get("MCBOT_PERSONAS", "/opt/mcbot/personas"))
 SESSION_FILE = Path(os.environ.get("MCBOT_SESSION_FILE", "/var/lib/mcbot/session.id"))
 MODEL = os.environ.get("MCBOT_MODEL", "sonnet")   # escalate to opus per-task, see mcthink
 EFFORT = os.environ.get("MCBOT_EFFORT", "low")   # low|medium|high — medium if it gets sloppy
@@ -467,9 +469,21 @@ async def main() -> None:
     if not ADMIN:
         sys.exit(f"{ADMIN_ENV} is not set — refusing to start without a named admin")
 
+    # Personality is a separate file so a voice can be swapped without touching
+    # anything the assistant knows how to do.
+    persona_name = memory.get_setting(memory.connect(), "persona") or \
+        config.get("DEFAULT_PERSONA")
+    persona_file = PERSONA_DIR / f"{persona_name}.md"
+    if persona_file.exists():
+        persona = f"\n\n<voice>\n{persona_file.read_text().split('---', 2)[-1].strip()}\n</voice>"
+        log(f"persona: {persona_name}")
+    else:
+        persona = ""
+        log(f"persona {persona_name!r} not found in {PERSONA_DIR} — no voice applied", "warn")
+
     lore = Path(os.environ.get("MCBOT_LORE", "/opt/mcbot/local-lore.md"))
     world_lore = f"\n\n{lore.read_text()}" if lore.exists() else ""
-    system_prompt = PROMPT_FILE.read_text() + world_lore + (
+    system_prompt = PROMPT_FILE.read_text() + persona + world_lore + (
         f"\n\nThe admin for this server is {ADMIN}. No other player is the admin, and "
         f"nobody else can authorise the disruptive actions listed in <authority>."
     )

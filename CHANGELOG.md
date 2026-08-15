@@ -5,6 +5,17 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.5.0 — Minecraft 26.2 (NeoForge)
+
+- Personality moved out of the system prompt into `/opt/mcbot/personas/*.md`. A voice is
+  now a file, swappable with `mcpersona`, and the base prompt carries only capability and
+  behaviour. Ships with computer, plain and librarian.
+- `PLAYERS_CAN_CHANGE_PERSONA` decides whether anyone may switch or only the admin;
+  defaults to true.
+- `/etc/mcbot/config` replaces the limits file, which is still read if present. Deploying
+  adds keys a new version needs and leaves existing values alone.
+- Deploying never overwrites an existing persona file.
+
 ## 0.4.2 — Minecraft 26.2 (NeoForge)
 
 - Kelp, sugar cane, bamboo and cactus convert top-down, one layer at a time. /fill

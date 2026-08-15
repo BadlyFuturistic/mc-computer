@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""mcpersona — which voice the assistant speaks in.
+
+  mcpersona list                      what is available, and which is active
+  mcpersona show [name]               the full text of one
+  mcpersona set <name> --by <player>  switch to it
+  mcpersona reset --by <player>       back to the configured default
+
+Personality lives in /opt/mcbot/personas/*.md, separate from everything the assistant
+knows how to do, so a voice can be swapped by dropping in a file. Whether players other
+than the admin may switch is PLAYERS_CAN_CHANGE_PERSONA in /etc/mcbot/config.
+
+A switch takes effect on the next request; it does not interrupt work in progress.
+"""
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/mcbot")
+import config  # noqa: E402
+import memory  # noqa: E402
+
+PERSONA_DIR = Path(os.environ.get("MCBOT_PERSONAS", "/opt/mcbot/personas"))
+
+
+def available() -> dict[str, Path]:
+    if not PERSONA_DIR.is_dir():
+        return {}
+    return {p.stem: p for p in sorted(PERSONA_DIR.glob("*.md"))}
+
+
+def describe(path: Path) -> str:
+    m = re.search(r"^description:\s*(.+)$", path.read_text(), re.M)
+    return m.group(1).strip() if m else ""
+
+
+def active_name(db) -> str:
+    return memory.get_setting(db, "persona") or config.get("DEFAULT_PERSONA")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    by = None
+    if "--by" in args:
+        i = args.index("--by")
+        by = args[i + 1]
+        del args[i:i + 2]
+    if not args:
+        sys.exit(__doc__)
+    cmd, rest = args[0], args[1:]
+    db = memory.connect()
+    have = available()
+
+    if cmd == "list":
+        current = active_name(db)
+        if not have:
+            print(f"no personas found in {PERSONA_DIR}")
+            return
+        for name, path in have.items():
+            mark = "*" if name == current else " "
+            print(f" {mark} {name:<14} {describe(path)}")
+        print(f"\nactive: {current}"
+              f"{'' if current in have else '  (missing — falling back to the file text)'}")
+        who = "any player" if config.truthy("PLAYERS_CAN_CHANGE_PERSONA") else "the admin only"
+        print(f"changeable by: {who}")
+
+    elif cmd == "show":
+        name = rest[0] if rest else active_name(db)
+        if name not in have:
+            sys.exit(f"no such persona: {name}. Available: {', '.join(have) or 'none'}")
+        print(have[name].read_text())
+
+    elif cmd in ("set", "reset"):
+        admin = os.environ.get("MCBOT_ADMIN", "")
+        if not config.truthy("PLAYERS_CAN_CHANGE_PERSONA"):
+            if not by:
+                sys.exit("refused: only the admin may change the persona here, and no "
+                         "player was given. Pass --by <player>.")
+            if admin and by.lower() != admin.lower():
+                sys.exit(f"refused: only {admin} may change the persona on this server.")
+
+        if cmd == "reset":
+            memory.set_setting(db, "persona", "")
+            print(f"persona reset to the configured default "
+                  f"({config.get('DEFAULT_PERSONA')})")
+            return
+
+        if not rest:
+            sys.exit("usage: mcpersona set <name> --by <player>")
+        name = rest[0]
+        if name not in have:
+            sys.exit(f"no such persona: {name}. Available: {', '.join(have) or 'none'}")
+        memory.set_setting(db, "persona", name)
+        memory.log_event(db, "note", f"persona set to {name}", player=by)
+        print(f"persona set to {name} — takes effect on the next request")
+
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

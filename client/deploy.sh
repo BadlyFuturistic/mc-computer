@@ -32,7 +32,7 @@ ssh "$HOST" "mkdir -p $STAGE"
 if [[ "$PROMPT_ONLY" == false ]]; then
     echo "==> server tools -> /opt/mc"
     scp -q "$REPO"/server/bin/* "$HOST:/opt/mc/"
-    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink,mchealth,mcfill,mcignite,mcfable} && chmod 644 /opt/mc/mcrcon.py"
+    ssh "$HOST" "chmod 755 /opt/mc/{compsay,mccmd,mcbuild,mcbag,mcwhere,mctp,mcrestart,mcbackup,mcmotd,mcnote,mcask,mcthink,mchealth,mcfill,mcignite,mcfable,mcpersona} && chmod 644 /opt/mc/mcrcon.py"
 fi
 
 echo "==> stamping build"
@@ -47,6 +47,9 @@ echo "    $BUILD_JSON"
 echo "==> bot code + prompt -> staging"
 scp -q "$REPO/server/mcbot/comp-daemon.py"        "$HOST:$STAGE/comp-daemon.py"
 scp -q "$REPO/server/mcbot/memory.py"             "$HOST:$STAGE/memory.py"
+scp -q "$REPO/server/mcbot/config.py"             "$HOST:$STAGE/config.py"
+ssh "$HOST" "mkdir -p $STAGE/personas"
+scp -q "$REPO"/server/personas/*.md               "$HOST:$STAGE/personas/"
 scp -q "$REPO/server/mcbot/minecraft-computer.md" "$HOST:$STAGE/minecraft-computer.md"
 scp -q "$REPO/server/systemd/mcbot.service"       "$HOST:$STAGE/mcbot.service"
 scp -q "$REPO"/server/systemd/mcbot-acl.*         "$HOST:$STAGE/"
@@ -65,6 +68,14 @@ ssh -t "$HOST" "
     sudo install -o root -g root -m 644 $STAGE/BUILD                 /opt/mcbot/BUILD &&
     sudo install -o root -g root -m 755 $STAGE/comp-daemon.py        /opt/mcbot/comp-daemon.py &&
     sudo install -o root -g root -m 644 $STAGE/memory.py             /opt/mcbot/memory.py &&
+    sudo install -o root -g root -m 644 $STAGE/config.py             /opt/mcbot/config.py &&
+    sudo install -d -o root -g root -m 755 /opt/mcbot/personas &&
+    for f in $STAGE/personas/*.md; do
+        # Never overwrite a persona that already exists — they are edited in place.
+        [ -e /opt/mcbot/personas/\$(basename \$f) ] ||
+            sudo install -o root -g root -m 644 \$f /opt/mcbot/personas/ ;
+    done &&
+    sudo /opt/mcbot/venv/bin/python /opt/mcbot/config.py &&
     sudo install -o root -g root -m 644 $STAGE/minecraft-computer.md /opt/mcbot/minecraft-computer.md &&
     sudo install -o root -g root -m 644 $STAGE/mcbot.service         /etc/systemd/system/mcbot.service &&
     sudo systemctl daemon-reload &&
