@@ -23,6 +23,11 @@ fail *silently* rather than erroring.
   `mcrepave` cloned a hillside into a bored tunnel, 1190 blocks, and reported every one
   as a success. `mcrepave` and `mcpave` check the kinds they laid, `mcbore` checks the
   tunnel is actually clear, and the rest check the block they promised went up.
+- The undermined-column count reports the run of passable blocks *directly* under a
+  surface, not every gap in the column. Counting every gap called 1,547 of 1,681 columns
+  undermined over ordinary cave country around home base, and a number that fires on
+  everything says nothing. The same box now reports 72, and spot-checking one found a
+  copper grate standing over two blocks of water.
 - A check that cannot read the world says so and lets the write stand. Refusing every
   write because the checker is blind would be worse than the problem, and the note goes
   to the operator either way, so "not checked" never reads as "checked and fine".

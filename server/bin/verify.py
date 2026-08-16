@@ -195,25 +195,32 @@ class Watch:
 # ---------------------------------------------------------------- surveying a box
 
 def _columns(reader, box):
-    """For every column in the box: (x, z, surface y, holes below the surface).
+    """For every column in the box: (x, z, surface y, unsupported blocks under it).
 
-    Surface is the highest block that would stop someone walking. `holes` counts the
-    passable blocks under it and inside the box, which is what an undermined road or a
-    part-filled floor looks like from above.
+    Surface is the highest block that would stop someone walking. The second number is
+    the run of passable blocks directly beneath it, which is what a road resting on
+    nothing looks like from above.
+
+    Directly beneath, not anywhere beneath. Counting every air block in the column
+    reported 1,547 of 1,681 columns as undermined over ordinary cave country, and a
+    number that fires on everything says nothing. What a tool needs to know after it
+    lays a surface is whether that surface is standing on something.
     """
     x1, y1, z1, x2, y2, z2 = region._ordered(box)
     for x in range(x1, x2 + 1):
         for z in range(z1, z2 + 1):
             surface = None
-            holes = 0
+            hollow = 0
             for y in range(y2, y1 - 1, -1):
-                if region.passable(reader.block(x, y, z)):
-                    if surface is not None:
-                        holes += 1
-                else:
-                    if surface is None:
+                solid = not region.passable(reader.block(x, y, z))
+                if surface is None:
+                    if solid:
                         surface = y
-            yield x, z, surface, holes
+                    continue
+                if solid:
+                    break               # the surface is standing on this
+                hollow += 1
+            yield x, z, surface, hollow
 
 
 def _control_boxes(box, margin: int):

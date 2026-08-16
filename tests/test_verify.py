@@ -195,6 +195,15 @@ class ReportingABox(support.TestCase):
         self.assertEqual(surface, Y)
         self.assertEqual(holes, 2)
 
+    def test_a_cave_well_below_solid_ground_is_not_undermining_it(self):
+        """Counting every air block in the column called 1,547 of 1,681 columns
+        undermined over ordinary cave country. A number that fires on everything
+        says nothing."""
+        reader = self.flat_world()
+        reader.clear((0, Y - 20, 0, 9, Y - 10, 9))
+        found = verify.report(reader, (0, Y - 30, 0, 9, Y, 9))
+        self.assertEqual(found["voids"]["undermined_columns"], 0)
+
     def test_a_players_build_shows_up_as_foreign(self):
         reader = self.flat_world()
         reader.fill((3, Y, 3, 6, Y + 3, 6), "minecraft:cobblestone")
