@@ -5,6 +5,18 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.20.1 — Minecraft 26.2 (NeoForge)
+
+- `mccost` reports a single past day: `mccost yesterday` and `mccost 2026-08-09` join
+  `mccost today`. All three build a date and select the log lines that start with it,
+  so they can never disagree about what a day is.
+- An argument that is neither `today`, `yesterday` nor a real date is now a usage
+  error. A typo previously fell through to the live tail, which looks like a day with
+  no turns in it and waits forever.
+- A valid date with no turns says so. The summary line only ever printed when the
+  count was above zero, so an empty day returned in silence and read as a broken
+  command.
+
 ## 0.20.0 — Minecraft 26.2 (NeoForge)
 
 **New `mcbranch`: a road that turns off an existing one at a right angle, with the markings

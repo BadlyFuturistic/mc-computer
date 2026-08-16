@@ -25,9 +25,34 @@ alias mccompall='ssh "$MC_HOST" "tail -n 0 -f /var/lib/mcbot/logs/comp.log"'
 alias mclogs='ssh "$MC_HOST" "docker logs -f --tail 50 mc"'
 
 # What each turn costs, live, paired with the message that caused it.
-#   mccost            follow new turns as they happen
-#   mccost today      every turn so far today, with a total
+#   mccost               follow new turns as they happen
+#   mccost today         every turn so far today, with a total
+#   mccost yesterday     every turn on the previous day
+#   mccost 2026-08-09    every turn on an explicit date (YYYY-MM-DD)
 mccost() {
+    # Every dated form takes the same path: build the day, then select the log lines
+    # that start with it. BSD date, because this runs on a Mac.
+    local day=""
+    case "$1" in
+        "")          ;;
+        today)       day="$(date +%Y-%m-%d)" ;;
+        yesterday)   day="$(date -v-1d +%Y-%m-%d)" ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+            # A well-formed date can still name a day that does not exist. BSD date
+            # rolls 2026-02-30 forward to March, so compare what comes back.
+            day="$(date -j -f %Y-%m-%d "$1" +%Y-%m-%d 2>/dev/null)"
+            if [ "$day" != "$1" ]; then
+                echo "mccost: not a real date: $1" >&2
+                return 2
+            fi
+            ;;
+        *)
+            echo "mccost: unknown argument: $1" >&2
+            echo "usage: mccost [today|yesterday|YYYY-MM-DD]" >&2
+            return 2
+            ;;
+    esac
+
     # Pull the request lines as well as the cost lines, so each cost can be labelled
     # with the chat message that triggered it.
     local filter="turn complete|^\\[.*\\[wake\\]     \\| [A-Za-z0-9_]+:"
@@ -47,12 +72,15 @@ mccost() {
             fflush()
             msg = ""
         }
-        END { if (count) printf "%s\n%d turns · $%.4f total · $%.4f average\n", \
-                     "----------------------------------------", count, total, total/count }
+        END {
+            if (count) printf "%s\n%d turns · $%.4f total · $%.4f average\n", \
+                     "----------------------------------------", count, total, total/count
+            else if (day != "") printf "no turns on %s\n", day
+        }
     '
-    if [ "$1" = "today" ]; then
-        ssh "$MC_HOST" "grep -aE '$filter' /var/lib/mcbot/logs/comp.log | grep -a \"^\\[$(date +%Y-%m-%d)\"" \
-            | awk "$awk_prog"
+    if [ -n "$day" ]; then
+        ssh "$MC_HOST" "grep -aE '$filter' /var/lib/mcbot/logs/comp.log | grep -a \"^\\[$day\"" \
+            | awk -v day="$day" "$awk_prog"
     else
         ssh "$MC_HOST" "tail -n 0 -f /var/lib/mcbot/logs/comp.log" \
             | grep --line-buffered -aE "$filter" | awk "$awk_prog"

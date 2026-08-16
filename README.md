@@ -210,8 +210,9 @@ for things no data file records, such as which base is the important one.
 | `mcfable` | run a request on Fable, gated on admin approval |
 
 Client-side, from `client/.bash_aliases`: `mccomplog` and `mccompall` for logs,
-`mccost` for what each turn costs (`mccost today` for a daily total), `mccompctl` for
-the service, plus `mcrestart`, `motd`, `mcwhere`, `mcbag`, `mcask` and `mcdeploy`.
+`mccost` for what each turn costs (`mccost today`, `yesterday` or a date such as
+`mccost 2026-08-09` for a daily total), `mccompctl` for the service, plus
+`mcrestart`, `motd`, `mcwhere`, `mcbag`, `mcask` and `mcdeploy`.
 
 ---
 
