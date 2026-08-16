@@ -31,6 +31,12 @@ fail *silently* rather than erroring.
 - Every persona states a floor: however terse or however warm, the reply still says which
   part worked, which did not, and what is standing in the world now. A voice that reads
   well and loses the outcome is the failure this guards against.
+- `mcpersona` now offers only the files that carry `name:` frontmatter, which the README
+  has required of a persona since personas existed. A voice can therefore keep a
+  supporting file beside it — the reference lines it was tuned against — without that
+  file being listed as a voice and switched to by someone who then gets no persona at
+  all. Deploying still copies every `.md` in the directory, which is what carries the
+  supporting file to the host.
 - `deploy.sh` never overwrites a persona that differs from the deployed copy, so these
   land only with `./client/deploy.sh --personas`.
 

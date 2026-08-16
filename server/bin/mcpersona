@@ -31,9 +31,17 @@ PERSONA_DIR = Path(os.environ.get("MCBOT_PERSONAS", "/opt/mcbot/personas"))
 
 
 def available() -> dict[str, Path]:
+    """The files in the directory that declare themselves personas.
+
+    A persona has `name:` frontmatter — the README has said so since personas existed.
+    Requiring it lets a voice keep a supporting file beside it, such as the reference
+    lines it was tuned against, without that file being offered as a voice nobody can
+    usefully switch to.
+    """
     if not PERSONA_DIR.is_dir():
         return {}
-    return {p.stem: p for p in sorted(PERSONA_DIR.glob("*.md"))}
+    return {p.stem: p for p in sorted(PERSONA_DIR.glob("*.md"))
+            if re.search(r"^name:\s*\S", p.read_text(), re.M)}
 
 
 def describe(path: Path) -> str:
