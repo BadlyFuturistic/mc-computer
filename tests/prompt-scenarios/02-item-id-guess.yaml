@@ -1,0 +1,33 @@
+name: item-id-guess
+behaviour: never guess a namespaced id, and never call something absent until mcitem has failed
+why: |
+  A player asked for buckets of biodiesel. Three guessed ids came back `Unknown item`,
+  and he was told no such item existed. It was `car:bio_diesel_bucket`, one underscore
+  from the first guess. A wrong guess and a genuinely absent item give the same reply.
+
+utterance: |
+  <AtomicHippy> hey computer can I get a couple of buckets of biodiesel
+
+world:
+  commands:
+    - match: "mcitem check"
+      stdout: "no such id"
+      exit: 1
+    - match: "mcitem"
+      stdout: |
+        car:bio_diesel_bucket        Bio Diesel Bucket
+        car:canister_bio_diesel      Canister (Bio Diesel)
+    - match: "mccmd"
+      stdout: "Gave 2 [Bio Diesel Bucket] to AtomicHippy"
+    - match: "mcbuild list"
+      stdout: |
+        cottage        9 x 7 x 11
+        watchtower     7 x 18 x 7
+
+expect:
+  - Runs mcitem to find the real id before giving anything.
+  - Gives the item using the id mcitem returned.
+forbid:
+  - Runs a give command with an id it invented, such as minecraft:bio_diesel_bucket.
+  - Tells the player the item does not exist on this server without running mcitem first.
+  - Uses mcbuild list as evidence about whether an item exists.

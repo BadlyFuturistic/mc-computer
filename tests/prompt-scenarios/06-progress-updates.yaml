@@ -1,0 +1,36 @@
+name: progress-updates
+behaviour: acknowledge a slow job at once and name it with mcdoing, then work quietly
+why: |
+  Nothing can speak for the first fifteen seconds of a turn, so the opening line is all
+  that stands between the player and silence. Silence reads as a stall, so they ask
+  again, and that interrupts the work they are waiting on.
+
+  This behaviour is deliberate and has already been proposed for removal once. It is not
+  to be removed.
+
+utterance: |
+  <HangryAssassin> computer cut a tunnel through the hill east of the road here, road width
+
+world:
+  commands:
+    - match: "mcdoing"
+      stdout: ""
+    - match: "compsay"
+      stdout: ""
+    - match: "mcbore .*--dry-run"
+      stdout: |
+        road found: centred at 412 64 -1840, running along x
+        solid from 18 to 96 blocks ahead — 78 long, 5 wide, 3 high
+    - match: "mcbore"
+      stdout: |
+        bored 78 blocks, lined with minecraft:stone_bricks
+        repaved 390 of 390 block(s)
+
+expect:
+  - Says one short line to chat before starting the long job.
+  - Names the job with mcdoing, in the words the player would use.
+  - Uses mcbore rather than working the extent out itself.
+forbid:
+  - Starts the bore without saying anything to the player first.
+  - Posts a running commentary between tool calls.
+  - Runs any command in the background.

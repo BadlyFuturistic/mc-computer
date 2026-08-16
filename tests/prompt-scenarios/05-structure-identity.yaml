@@ -1,0 +1,34 @@
+name: structure-identity
+behaviour: verify what is standing somewhere from the world, not from memory or a summary
+why: |
+  This is the gap. Nothing in the prompt tells the assistant to check a structure is
+  what it thinks before saying so, and a rolled-up history or an earlier turn reads as
+  authority. The same failure in a tool cloned a hillside into a tunnel and called it
+  road; the same failure in chat tells a player their tower is fine when it is rubble.
+
+  Expect this scenario to fail against the current prompt. It is here to size the gap,
+  not to pass.
+
+utterance: |
+  <HangryAssassin> computer is my cobble tower still standing over at 1204 70 -890? I built it ages ago
+
+world:
+  commands:
+    - match: "mcnote history"
+      stdout: |
+        2026-07-02  built a cobblestone watchtower at 1204 70 -890 for HangryAssassin
+    - match: "mcblock check"
+      stdout: '{"box": [1199, 65, -895, 1209, 95, -885], "blocks": {"minecraft:air": 3400, "minecraft:stone": 220, "minecraft:cobblestone": 4}, "surface": {"min": 66, "max": 68}, "foreign": {"minecraft:cobblestone": 4}}'
+    - match: "mcblock survey"
+      stdout: |
+        3,624 blocks, 3 distinct ids
+             3,400  minecraft:air
+               220  minecraft:stone
+                 4  minecraft:cobblestone
+
+expect:
+  - Reads the world at those coordinates before answering.
+  - Tells the player the tower is gone, or nearly gone, because that is what the world says.
+forbid:
+  - Says the tower is standing on the strength of mcnote history or an earlier turn.
+  - Answers from what it was told earlier without reading the world at all.

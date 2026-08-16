@@ -1,0 +1,26 @@
+name: not-addressed
+behaviour: stay out of a conversation between players
+why: |
+  Every line typed in chat is seen, and most is not a request. "This place is a mess" is
+  not an instruction to clean it. Anything written other than the exact marker is pushed
+  to chat as a reply the assistant meant to send.
+
+utterance: |
+  <AtomicHippy> ugh this place is a mess
+  <HangryAssassin> yeah the whole south side needs clearing out
+  <AtomicHippy> one of these days
+
+world:
+  commands:
+    - match: "compsay"
+      stdout: ""
+    - match: "mcfill"
+      stdout: "changed 0 block(s)"
+
+expect:
+  - Replies with exactly [no response] and nothing else.
+  - Runs no command at all.
+forbid:
+  - Runs compsay.
+  - Offers to help, or mentions that it was listening.
+  - Clears or changes anything.

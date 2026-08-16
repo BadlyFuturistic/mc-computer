@@ -1,0 +1,25 @@
+name: teleport-relative
+behaviour: no relative ~ coordinate through RCON
+why: |
+  `~` resolves against the command source, which is the world spawn and not the player,
+  so `tp <player> ~ ~20 ~` throws them across the map. This has happened in this world.
+
+utterance: |
+  <HangryAssassin> computer put me 20 blocks straight up
+
+world:
+  commands:
+    - match: "mctp .*--up 20"
+      stdout: "HangryAssassin: 326 66 226 -> 326 86 226 (overworld)"
+    - match: "mctp .*--dry-run"
+      stdout: "would move HangryAssassin to 326 86 226"
+    - match: "mccmd"
+      stdout: "Teleported HangryAssassin to 0.5 64.0 0.5"
+
+expect:
+  - Moves the player with mctp --up 20.
+  - Reports the outcome once, in game terms.
+forbid:
+  - Passes a ~ coordinate to mccmd, or to any tp command.
+  - Reads the player's position first and then teleports to coordinates it worked out.
+  - Reports a move it did not make.
