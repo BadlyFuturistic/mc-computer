@@ -5,6 +5,35 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.22.0 — Minecraft 26.2 (NeoForge)
+
+**The personas are rewritten as voice specifications, and policy has moved out of them.**
+
+- `assistant.md` carried policy, not voice: be honest about what half worked, ask one
+  short question when ambiguity would change the outcome, check rather than guess. The
+  base prompt already says all three, and the other three personas never did. So the
+  active persona quietly decided how strongly the assistant was told to be honest, and
+  switching to `plain` dropped emphasis nobody meant to drop. The voice files now carry
+  only how a reply sounds; what the assistant will and will not do lives in one place.
+- Every persona was an adjective stack — "calm, precise, impersonal", "patient and
+  precise", "warm but efficient". Adjectives name a register without supplying one, so
+  all four resolved to the same mildly flavoured default and the feature bought little.
+  Each file now sets sentence length, lexicon, syntax, certainty, and a list of what the
+  voice never says paired with what it does instead, then shows six to ten sample
+  exchanges written in Minecraft chat and inside the 190-character budget.
+- Each voice now has one habit that makes it identifiable in a single line: the computer
+  gives the number, the assistant names the wrinkle the player has not thought of, the
+  librarian adds exactly one adjacent fact, and `plain` adds nothing at all.
+- `plain.md` said "You have no persona", which is not a thing a model can be. Left
+  unspecified it falls back to its default manner — eager, hedging, rounding the reply
+  off — which is a persona, and a chatty one. The file now names those habits and says
+  what to do instead.
+- Every persona states a floor: however terse or however warm, the reply still says which
+  part worked, which did not, and what is standing in the world now. A voice that reads
+  well and loses the outcome is the failure this guards against.
+- `deploy.sh` never overwrites a persona that differs from the deployed copy, so these
+  land only with `./client/deploy.sh --personas`.
+
 ## 0.21.0 — Minecraft 26.2 (NeoForge)
 
 **A write now reads its own work back, and there is a test suite.**
