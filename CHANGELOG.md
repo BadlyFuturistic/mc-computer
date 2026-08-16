@@ -5,6 +5,28 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.18.2 — Minecraft 26.2 (NeoForge)
+
+**Asked for 2000 blocks of road across open water, mcpave laid 538 and sealed every one
+of them under three layers of stone.** The fill over the new road was on by default, on
+the reasoning that paving exists to let a tunnel go further. Paving mostly does not.
+Nothing bored afterwards and nothing was going to, so the result was half a road, buried.
+
+- `--height` now defaults to 0. The volume over the new road is left alone unless asked
+  for, and `--height 3` restores the old behaviour for the road-then-bore sequence.
+  `--no-fill` is still accepted, so commands written against the old default still run.
+- The volume is still scanned on every run. A run that leaves it open reports how many
+  blocks of water and air it left, and that a bore following will read them as open ground
+  and stop at the crossing. The reasoning that justified the old default was sound; it was
+  the default that was wrong, so the tool now says the thing instead of doing it.
+- The prompt paragraph added in 0.18.1 repeated that reasoning and told the assistant the
+  solid fill was correct and not overreach. It said so for the case where a bore follows,
+  which is the rarer one. It now says to add `--height` only when boring, and not to put
+  it on a road a player will drive on.
+- Removed the 7,409 stone blocks over the road at y 63–65, x -4225..-3687. Natural bare
+  stone runs 5–8% of that height band here and the strip was 92%, so a stone-only replace
+  took the fill and left the hillside soil. The carriageway under it is intact.
+
 ## 0.18.1 — Minecraft 26.2 (NeoForge)
 
 **Asked to extend a road, the assistant said three times that it had no tool which lays

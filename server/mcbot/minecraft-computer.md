@@ -517,7 +517,7 @@ boring always takes them out.
 
 To carry a road on past where it currently ends:
 
-  /opt/mc/mcpave <y> <x1> <z1> <x2> <z2> [--height 3] [--fill <block>]
+  /opt/mc/mcpave <y> <x1> <z1> <x2> <z2> [--height <n>]
 
 Give it the carriageway level — one below where the markings sit. It works the same way
 mcrepave does: it finds an intact slice across the road just beyond the end of the strip
@@ -528,11 +528,15 @@ sit a level higher, a bore clears that level anyway, and mcrepave puts them back
 A bore stops where the carriageway stops, so paving is what lets a tunnel go further.
 Road first, then bore, then repave.
 
-It makes the volume over the new road solid, three blocks high by default. That reads as
-overreach and is not: water and air are passable, so a bore scanning ahead counts a
-flooded crossing as open ground and concludes it is through after four steps. Filling it
-first turns the crossing into ordinary hillside, which mcbore already lines before it
-cuts, and that lining is what keeps the water out afterwards.
+Plain `mcpave` gives you road and leaves the sky over it alone, which is what a player
+who asked for a road wants. Add `--height 3` only when a bore has to follow: it packs the
+volume over the road solid, because water and air read as passable and a bore scanning
+ahead counts a flooded crossing as open ground and concludes it is through. A run without
+it reports how many blocks it left open, so you can pave that stretch again if a tunnel
+turns out to be needed.
+
+Never add `--height` to a road a player will simply drive on. It seals the carriageway
+under three layers of stone, and that has already been done to 538 blocks of road.
 
 Read the `--dry-run` before committing to a long run. It names the slice it means to
 copy, and a slice taken from a rock face or a beach paves the road in stone or sand for
