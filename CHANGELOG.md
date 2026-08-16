@@ -5,6 +5,32 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.18.1 — Minecraft 26.2 (NeoForge)
+
+**Asked to extend a road, the assistant said three times that it had no tool which lays
+road. `mcpave` had shipped in 0.16.0 and was installed on the host at the time.** It was
+never written into the prompt, so it was never a tool the assistant had. The same omission
+was caught in `README.md` one version earlier and fixed there only; the tool table a human
+reads and the brief the assistant reads went out of step separately.
+
+- The prompt's `<tunnels>` section now carries `mcpave`, next to `mcbore` and `mcrepave`,
+  and states the order the three run in: road first, then bore, then repave. A bore stops
+  where the carriageway stops, so paving is what lets a tunnel go further, and that is the
+  reason the tool exists.
+- New `<no_tool_for_it>` section. The refusal was not only a missing entry — every fallback
+  was closed by a different rule. `<structures>` discourages freehand fills for anything
+  bigger than a shed, `<hard_problems>` delegates judgement rather than work, and `<fable>`
+  forbids suggesting Fable, which is what actually built this road the night before. No rule
+  said what to do when all of them apply at once, so the assistant refused instead of
+  laying road with `mcfill`, which it could have done. The new section says a missing tool
+  is not a missing capability, that a road or wall or causeway is one slice repeated along a
+  line, and that a refusal has to give a reason a player can act on.
+- It also says to check what was actually run when a player says a job was done before. Told
+  it had built the road the previous night, the assistant answered that there was no record.
+  It had looked at `mcnote history --days 2`, which rolls a day up to `77 request(s) … (+74
+  more)` and hid the build inside the count. A summary that omits something is not evidence
+  it did not happen.
+
 ## 0.18.0 — Minecraft 26.2 (NeoForge)
 
 **In one hour the assistant told players that biodiesel, magic wood and a car did not exist
