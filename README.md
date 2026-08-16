@@ -148,6 +148,18 @@ Ships with `computer` (calm and impersonal), `assistant` (a capable first-party
 helper), `plain` (no character at all) and `librarian`. Add your own by writing a file with `name` and `description` frontmatter
 and the voice below it.
 
+A voice is written as a specification rather than a description: who the speaker is, then
+sentence length, lexicon, syntax, and certainty, then the list of what it never says
+paired with what it says instead, then sample exchanges. Adjectives such as "calm" or
+"warm" name a register without supplying one, and every voice written that way converges
+on the same mildly flavoured default. Each file also states a floor — the thing the voice
+still communicates however it sounds — because a voice that reads well and loses which
+half of the job worked has failed.
+
+`mcpersona` only offers files that carry `name:` frontmatter, so a voice can keep a
+supporting file beside it — reference lines it was tuned against, say — without that file
+being listed as a voice. Deploying copies every `.md` in the directory either way.
+
 `PLAYERS_CAN_CHANGE_PERSONA` in the config decides whether anyone may switch or only the
 admin. It defaults to **true**, on the assumption that most servers would rather let
 players play with it.
