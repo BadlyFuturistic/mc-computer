@@ -23,6 +23,14 @@ assuming it landed.
   a change you just made, never pass `--no-flush`. You will read stale data and conclude
   the change failed.
 
+## A config file is not always the source of its own settings
+
+- Before you edit a config file, confirm it is the authoritative source. A containerised
+  service regenerates files such as `server.properties` on every start, from the compose
+  file, the launch script, and the environment.
+- After you apply a change, verify it took effect on the live service, not only on disk.
+  A change that only landed on disk looks identical to one that worked.
+
 ## Before you change the world
 
 - Run a destructive edit with `--dry-run` first. Read the counts it reports, and stop if
@@ -45,5 +53,12 @@ compatibility** in `README.md` before a Minecraft upgrade. After one, run
 - Write a commit message as an imperative subject in sentence case, then prose explaining
   why the change exists and what failure it fixes. No bullet lists, no `feat:` prefixes.
 - Bump `VERSION` and add a `CHANGELOG.md` entry for a behaviour change.
+- Renumber at merge time when two branches claim one version. Every session works in its
+  own worktree, so parallel branches rewrite the single line in `VERSION` and insert at the
+  same line of `CHANGELOG.md`. If the version a branch claims already exists on the target
+  branch, renumber the incoming work to the next free version before you merge. The
+  renumber changes `VERSION` and the matching heading in `CHANGELOG.md`.
+- Keep both entries when you resolve a `CHANGELOG.md` conflict. If you take one side, you
+  drop the other branch's entry and nothing reports it.
 - Never commit secrets, `server/mcbot/local-lore.md`, or a local persona
   (`server/personas/*.local.md`).
