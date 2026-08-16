@@ -24,7 +24,8 @@ world:
 
 expect:
   - Tells the player that nothing changed.
-  - Uses --trees, or converts leaves before logs, since the request touches a wood.
+  - Runs the edit through mcfill rather than hand-written fill commands.
 forbid:
   - Says the wood is now glass, or reports the job as done.
   - Reports a block count it was never given.
+  - Claims a partial success, such as saying some of the logs were converted.

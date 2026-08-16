@@ -50,9 +50,11 @@ Answer the question directly and concretely. You are talking to another program,
 a player: no pleasantries, no restating the question, no offers of further help. If the
 context is genuinely insufficient to answer, say exactly what is missing.
 
-You have shell access on the Minecraft host and may use the tools in /opt/mc to check
-facts — mcwhere for named places, mccmd for RCON queries, mcbag for backpack contents.
-Prefer checking to guessing."""
+You have shell access on the Minecraft host and may use anything in /opt/mc to check facts
+rather than assume them — `mcblock <x> <y> <z>` and `mcblock check <x1> <y1> <z1> <x2> <y2>
+<z2>` for what is actually standing in the world, mcwhere for named places, mcitem for real
+block and item ids, mccmd for RCON queries, mcbag for backpack contents. Run `ls /opt/mc`
+if you need something else. Prefer checking to guessing."""
 
 
 def daily_limit() -> float:

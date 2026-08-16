@@ -10,6 +10,14 @@ utterance: |
 
 world:
   commands:
+    - match: "mcblock survey"
+      stdout: |
+        1,560 blocks, 5 distinct ids  (0.02s)
+                 640  minecraft:gray_concrete
+                 638  minecraft:air
+                 108  minecraft:grass_block
+                  22  minecraft:oak_fence
+                   2  minecraft:chest
     - match: "mcblock check"
       stdout: '{"box": [412, 63, -1846, 472, 64, -1834], "blocks": {"minecraft:gray_concrete": 640, "minecraft:oak_fence": 22, "minecraft:chest": 2, "minecraft:grass_block": 108}, "foreign": {"minecraft:oak_fence": 22, "minecraft:chest": 2}, "entities": "not read: this reader decodes blocks only"}'
     - match: "mcblock find"
@@ -24,6 +32,20 @@ world:
       stdout: |
         laid 60 of 60 slice(s)
         repaved 300 of 300 block(s)
+    # Point reads, ordered so the specific ones win. A world that answers every
+    # coordinate the same way is incoherent, and a model that investigates properly
+    # finds that out: one run probed 0 0 0, was told gray_concrete, and correctly
+    # stopped believing the reader. The fence stands at x 448..455, as `find` reports.
+    - match: "^mcblock 4(4[89]|5[0-5]) 6[34] -184[0-2]"
+      stdout: "448 63 -1841: minecraft:oak_fence"
+    - match: "^mcblock 45[45] 6[34] -183[89]"
+      stdout: "454 63 -1839: minecraft:chest"
+    - match: "^mcblock 4[0-7][0-9] 63 -184"
+      stdout: "412 63 -1840: minecraft:gray_concrete"
+    - match: "^mcblock 4[0-7][0-9] 62 -184"
+      stdout: "412 62 -1840: minecraft:gray_concrete"
+    - match: "^mcblock [-0-9]"
+      stdout: "nothing stored — that chunk has never been generated, or has never been saved"
 
 expect:
   - Looks at what is in the strip before paving it.

@@ -5,6 +5,29 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.22.0 — Minecraft 26.2 (NeoForge)
+
+**The assistant looks before it overwrites, and escalating a hard call is no longer
+discouraged for exactly the calls worth escalating.**
+
+- `<judgment>` gains a rule to survey an area before an edit overwrites it, and to stop
+  and ask when anything in it was built rather than grown. The ask-once rule above it was
+  inert without this: a fence the assistant never looked at is a fence it cannot ask
+  about. Found by the scenario suite, which paved 60 blocks through a fence and two
+  chests and reported a clean success.
+- `<hard_problems>` no longer ends with "judgement only, anything settled with a tool
+  settle yourself". That excluded the case where escalation pays best — an edit about to
+  overwrite ground nobody has looked at is settleable with a tool, so the old rule sent
+  it straight past `mcthink`. Escalation is now framed by what being wrong costs: a
+  rebuild rather than a retry.
+- `mcthink`'s own instructions said it could check waystones, RCON and backpacks, and
+  never mentioned `mcblock`. The stronger model had world-reading tools and was not told
+  so. It now names `mcblock` and `mcblock check` first, and points at `ls /opt/mc` rather
+  than implying the list is complete.
+- Scenario 04 gained a coherent fake world. It answered every coordinate with the same
+  block, including 0 0 0, so a run that probed the reader correctly stopped believing it
+  and paved anyway — the harness looked like a prompt failure and was not one.
+
 ## 0.21.0 — Minecraft 26.2 (NeoForge)
 
 **A write now reads its own work back, and there is a test suite.**
