@@ -198,6 +198,7 @@ for things no data file records, such as which base is the important one.
 | `mcbore` | cut a tunnel through a mass, finding both ends itself |
 | `mcpave` | carry a carriageway on from the end of a road |
 | `mcrepave` | restore a road surface by cloning an intact slice along |
+| `mcbranch` | turn a road off an existing one at a right angle |
 | `mcshape` | build a sphere, dome, cylinder, torus, ramp and nine more |
 | `mcmark` | read a build marked out with blocks placed in the world |
 | `mcpersona` | list, show and switch the assistant's voice |

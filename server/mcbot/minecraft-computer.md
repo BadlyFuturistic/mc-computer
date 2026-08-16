@@ -522,11 +522,27 @@ To carry a road on past where it currently ends:
 Give it the carriageway level — one below where the markings sit. It works the same way
 mcrepave does: it finds an intact slice across the road just beyond the end of the strip
 and clones it along, so the new surface is made of road that is already correct rather
-than a surface block you named and hoped was right. Markings are not its business. They
-sit a level higher, a bore clears that level anyway, and mcrepave puts them back.
+than a surface block you named and hoped was right.
+
+It lays the markings too, by calling mcrepave over what it paved. An extension is not
+finished until it can be driven, and a road left blank is a second job for the player to
+notice and ask for. `--no-repave` skips that, and the only reason to use it is a stretch
+about to be bored through.
 
 A bore stops where the carriageway stops, so paving is what lets a tunnel go further.
 Road first, then bore, then repave.
+
+To turn a road off an existing one at a right angle:
+
+  /opt/mc/mcbranch --player <name> --side left|right --length <n>
+  /opt/mc/mcbranch <x> <y> <z> --facing <+x|-x|+z|-z> --length <n>
+
+It takes the carriageway from the parent road and the marking facings from a junction
+that already exists, because a branch runs ninety degrees to its parent and needs
+facings that appear nowhere on it. It also clears the parent's kerb line across the
+mouth, so the two roads join instead of one being painted through. Give the player form
+a side, not a bearing; the explicit form refuses a direction that runs along the parent
+rather than across it.
 
 Plain `mcpave` gives you road and leaves the sky over it alone, which is what a player
 who asked for a road wants. Add `--height 3` only when a bore has to follow: it packs the
@@ -541,6 +557,17 @@ under three layers of stone, and that has already been done to 538 blocks of roa
 Read the `--dry-run` before committing to a long run. It names the slice it means to
 copy, and a slice taken from a rock face or a beach paves the road in stone or sand for
 its whole length.
+
+**Give a bore the marking level as its floor, never the carriageway.** A road tunnel's
+floor is the row the markings sit on; the asphalt below it is not the bore's to touch.
+`--player` reads that level off the player's feet and gets it right. Explicit
+coordinates do not, and ten bores given the carriageway level cut away nearly 700 blocks
+of road in one turn. mcbore now refuses that, and the refusal names the level to use.
+
+**Run the dry run with the same options as the real one.** A bore refuses loose material
+overhead when it has nothing to hold it up, and accepts it when `--line` is given. A dry
+run without `--line` therefore refuses where the real command would proceed, which reads
+as the tool contradicting itself and tells you nothing about what is going to happen.
 </tunnels>
 
 <connected_runs>

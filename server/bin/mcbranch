@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""mcbranch — turn a road off an existing one at a right angle.
+
+  mcbranch --player <name> --side left|right --length <n> [options]
+  mcbranch <x> <y> <z> --facing <+x|-x|+z|-z> --length <n> [options]
+
+  mcbranch --player Someone --side left --length 60
+
+  --side left|right  which hand the branch leaves on, from where the player looks
+  --length <n>       how far the branch runs, measured from the parent's edge
+  --width <n>        carriageway width, default the parent's own
+  --no-markings      lay the carriageway and leave it unpainted
+  --dry-run          report what it found and would do, change nothing
+  --dimension <dim>  default minecraft:overworld
+
+Nothing here names a block. The carriageway comes from the parent road, cloned a row at
+a time, so a branch is made of the same surface as the road it leaves — kerbs, block
+states and all.
+
+The markings are the part that needs care, and the reason this tool exists rather than
+being a second call to mcpave. A painted marking carries a facing that cannot be worked
+out by reasoning about it: on this world's east-west road the north edge faces west and
+the south edge faces east, so the two sides of one carriageway point opposite ways. A
+branch runs at ninety degrees to its parent, which means every marking on it needs a
+facing that appears nowhere on the parent. Cloning the parent's own lines into it would
+lay the whole branch out sideways.
+
+So the facings come from a road that already runs the right way. Any junction in the
+world is a place where both directions meet, and this reads its markings from one:
+`--from <x> <z>` names the corner to learn from, and the default is the junction beside
+home base, whose north-south segment carries the four blocks a branch needs. Learning
+them from the world rather than deriving them keeps the one rule that has never been
+safely broken here — copy block state, never reconstruct it.
+"""
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, "/opt/mc")
+import builder  # noqa: E402
+import region  # noqa: E402
+import roads  # noqa: E402
+from mcrcon import Rcon, RconError  # noqa: E402
+
+SETTLE = 0.6
+REACH = 40            # how far to look for the parent road around the player
+DASH = 5              # centre-line repeat, confirmed against the road it copies
+
+# The junction beside home base. Its north-south segment carries a side line for each
+# hand and a centre dash, all facing the way a z-running road needs.
+TEACHER = {
+    "low_edge":  (152, 235),      # the lower-coordinate kerb of a z-running road
+    "high_edge": (156, 238),      # the higher-coordinate kerb
+    "centre":    (154, 236),      # its dashed centre line
+    "corner":    (152, 239),      # where that segment meets an east-west road
+}
+
+
+def player_state(name: str):
+    """Feet position and facing, straight from the server — this must be live."""
+    out = subprocess.run(
+        ["/opt/mc/mccmd"], input=f"data get entity {name} Pos\n"
+        f"data get entity {name} Rotation\n",
+        capture_output=True, text=True).stdout
+    pos = re.search(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]", out)
+    rot = re.search(r"\[(-?[\d.]+)f", out)
+    if not pos or not rot:
+        sys.exit(f"could not read {name}'s position — are they online?")
+    x, y, z = (float(v) for v in pos.groups())
+    return x, y, z, float(rot.group(1))
+
+
+def facing_from_yaw(yaw: float) -> str:
+    """The cardinal direction a yaw points along."""
+    q = int((yaw % 360 + 45) // 90) % 4
+    return ("+z", "-x", "-z", "+x")[q]
+
+
+def left_of(facing: str) -> str:
+    """The direction on a player's left hand when they look this way."""
+    return {"+z": "+x", "+x": "-z", "-z": "-x", "-x": "+z"}[facing]
+
+
+def find_parent(reader, y, px, pz):
+    """The parent road's axis and centre line near the player.
+
+    Taken from the road, never from where the player stands: a player is never on the
+    centre line and keeps moving after asking, which is how a tunnel came out a block
+    off the road it was meant to follow.
+    """
+    for r in range(REACH):
+        for dx, dz in ((0, 0), (r, 0), (-r, 0), (0, r), (0, -r)):
+            x, z = px + dx, pz + dz
+            name = reader.block(x, y, z)
+            if name is None or region.passable(name):
+                continue
+            along_x = roads.direction(reader, y, x, z, {name})
+            t = x if along_x else z
+            lo = hi = z if along_x else x
+
+            def solid(a, t=t, along_x=along_x, name=name):
+                bx, bz = roads.at(t, a, along_x)
+                return reader.block(bx, y, bz) == name
+
+            while solid(lo - 1):
+                lo -= 1
+            while solid(hi + 1):
+                hi += 1
+            if hi - lo + 1 < 3:
+                continue
+            return along_x, lo, hi, name
+    return None
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    def take(flag, cast=str, default=None):
+        if flag in args:
+            i = args.index(flag)
+            value = cast(args[i + 1])
+            del args[i:i + 2]
+            return value
+        return default
+
+    dimension = take("--dimension", str, "minecraft:overworld")
+    player = take("--player")
+    side = take("--side")
+    facing = take("--facing")
+    length = take("--length", int)
+    width = take("--width", int)
+    teach_x = take("--from", int)
+    teach_z = take("--from-z", int)
+    no_marks = "--no-markings" in args
+    dry = "--dry-run" in args
+    coords = [a for a in args if not a.startswith("--")]
+
+    if length is None or length < 1:
+        sys.exit("--length is required and must be at least 1")
+    if teach_x is not None and teach_z is not None:
+        shift = (teach_x - TEACHER["low_edge"][0], teach_z - TEACHER["low_edge"][1])
+        for k, (tx, tz) in TEACHER.items():
+            TEACHER[k] = (tx + shift[0], tz + shift[1])
+
+    try:
+        reader = region.Reader(dimension)
+        reader.flush()
+
+        if player:
+            px, py, pz, yaw = player_state(player)
+            look = facing_from_yaw(yaw)
+            if not side:
+                sys.exit("--side left or right is required with --player")
+            out_dir = left_of(look)
+            if side == "right":
+                out_dir = left_of(left_of(left_of(out_dir)))
+            elif side != "left":
+                sys.exit("--side must be left or right")
+            y = int(py) - 1
+            seed = (round(px), round(pz))
+        else:
+            if len(coords) != 3 or not facing:
+                sys.exit(__doc__)
+            sx, sy, sz = (int(c) for c in coords)
+            y, seed, out_dir = sy, (sx, sz), facing
+
+        found = find_parent(reader, y, seed[0], seed[1])
+        if not found:
+            sys.exit(
+                f"no road found at y={y} near {seed[0]} {seed[1]}. Stand on the "
+                f"carriageway — the branch is measured from the road, not from you.")
+        along_x, k_lo, k_hi, surface = found
+        print(f"parent road: {surface.split(':')[-1]}, runs along "
+              f"{'x' if along_x else 'z'}, kerbs at "
+              f"{'z' if along_x else 'x'} {k_lo}..{k_hi}")
+
+        branch_along_x = not along_x
+        if (out_dir in ("+x", "-x")) != branch_along_x:
+            sys.exit(
+                f"a branch leaves its parent at a right angle, and {out_dir} runs the "
+                f"same way as this road. Face across the road, or give --facing "
+                f"{'+z' if along_x else '+x'} or {'-z' if along_x else '-x'}.")
+
+        w = width or (k_hi - k_lo + 1)
+        half = (w - 1) // 2
+        # The branch is centred where the player stands, snapped along the parent so the
+        # mouth sits square on it.
+        centre = seed[0] if along_x else seed[1]
+        b_lo, b_hi = centre - half, centre + half
+        step = 1 if out_dir.startswith("+") else -1
+        start = (k_hi + 1) if step > 0 else (k_lo - 1)
+        stop = start + step * (length - 1)
+        print(f"branch: runs along {'x' if branch_along_x else 'z'} "
+              f"{min(start, stop)}..{max(start, stop)}, {length} long, {w} wide, "
+              f"across {'x' if along_x else 'z'} {b_lo}..{b_hi}")
+
+        # A row of parent carriageway that lies along the branch's across axis, which is
+        # the parent's own along axis — the same five blocks, turned. Cloning it needs no
+        # rotation and names nothing.
+        src_t = None
+        for i in range(REACH):
+            for t in (centre + i, centre - i):
+                row = [roads.at(t + j, (k_lo + k_hi) // 2, along_x) for j in range(w)]
+                if all(reader.block(bx, y, bz) == surface for bx, bz in row):
+                    src_t = t
+                    break
+            if src_t is not None:
+                break
+        if src_t is None:
+            sys.exit(f"could not find {w} blocks of unbroken {surface} along the parent "
+                     f"to copy the branch surface from.")
+        s1 = roads.at(src_t, (k_lo + k_hi) // 2, along_x)
+        s2 = roads.at(src_t + w - 1, (k_lo + k_hi) // 2, along_x)
+        print(f"copying the branch surface from {s1[0]} {y} {s1[1]} .. "
+              f"{s2[0]} {y} {s2[1]}")
+
+        marks = []
+        if not no_marks:
+            for key, (tx, tz) in TEACHER.items():
+                got = reader.block(tx, 63, tz)
+                if got is None or not got.startswith("car:line"):
+                    sys.exit(
+                        f"the junction this learns marking facings from has no line at "
+                        f"{tx} 63 {tz} (found {got}). Give --from <x> --from-z <z> "
+                        f"naming a corner where a road turns, or pass --no-markings.")
+            for i in range(length):
+                t = start + step * i
+                marks.append((TEACHER["low_edge"], b_lo, t))
+                marks.append((TEACHER["high_edge"], b_hi, t))
+                if i % DASH == 0:
+                    marks.append((TEACHER["centre"], (b_lo + b_hi) // 2, t))
+
+        if dry:
+            print(f"  would lay {length * w} block(s) of carriageway and "
+                  f"{len(marks)} marking(s), and clear the parent's kerb line across "
+                  f"the {w}-block mouth")
+            return
+
+        ctx = f"execute in {dimension} run "
+        bx1, bz1 = roads.at(min(start, stop), b_lo, branch_along_x)
+        bx2, bz2 = roads.at(max(start, stop), b_hi, branch_along_x)
+        box = (min(bx1, bx2) - 2, min(bz1, bz2) - 2,
+               max(bx1, bx2) + 2, max(bz1, bz2) + 2)
+        parent_box = (min(s1[0], s2[0]) - 2, min(s1[1], s2[1]) - 2,
+                      max(s1[0], s2[0]) + 2, max(s1[1], s2[1]) + 2)
+        teach_box = (min(p[0] for p in TEACHER.values()) - 2,
+                     min(p[1] for p in TEACHER.values()) - 2,
+                     max(p[0] for p in TEACHER.values()) + 2,
+                     max(p[1] for p in TEACHER.values()) + 2)
+
+        laid = painted = cleared = failed = 0
+        with Rcon() as rcon:
+            import time
+            for b in (box, parent_box, teach_box):
+                builder.forceload(rcon, ctx, b, add=True)
+            try:
+                time.sleep(SETTLE)
+                for i in range(length):
+                    t = start + step * i
+                    d = roads.at(t, b_lo, branch_along_x)
+                    out = rcon.command(f"{ctx}clone {s1[0]} {y} {s1[1]} "
+                                       f"{s2[0]} {y} {s2[1]} {d[0]} {y} {d[1]}")
+                    if "cloned" in out.lower():
+                        laid += 1
+                    else:
+                        failed += 1
+
+                # The parent's kerb runs straight across the mouth of the branch. Left
+                # there it paints a line through the middle of the junction.
+                for a in range(b_lo, b_hi + 1):
+                    mx, mz = roads.at(a, k_hi if step > 0 else k_lo, along_x)
+                    out = rcon.command(f"{ctx}setblock {mx} {y + 1} {mz} minecraft:air")
+                    if "Changed the block" in out:
+                        cleared += 1
+
+                for (tx, tz), a, t in marks:
+                    d = roads.at(t, a, branch_along_x)
+                    out = rcon.command(f"{ctx}clone {tx} 63 {tz} {tx} 63 {tz} "
+                                       f"{d[0]} {y + 1} {d[1]}")
+                    if "cloned" in out.lower():
+                        painted += 1
+                    else:
+                        failed += 1
+            finally:
+                for b in (box, parent_box, teach_box):
+                    builder.forceload(rcon, ctx, b, add=False)
+
+        print(f"laid {laid} of {length} row(s), painted {painted} marking(s), "
+              f"cleared {cleared} block(s) of the parent's kerb across the mouth")
+        if failed:
+            sys.exit(f"{failed} block(s) would not take the change. The branch is part "
+                     f"built; re-run once you know why.")
+
+    except region.RegionError as e:
+        sys.exit(str(e))
+    except RconError as e:
+        sys.exit(f"rcon: {e}")
+
+
+if __name__ == "__main__":
+    main()

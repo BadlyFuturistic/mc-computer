@@ -5,6 +5,41 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.20.0 — Minecraft 26.2 (NeoForge)
+
+**New `mcbranch`: a road that turns off an existing one at a right angle, with the markings
+handled where they meet.**
+
+- The carriageway is cloned from the parent, a row at a time, so a branch is made of the
+  same surface as the road it leaves.
+- The marking facings come from a junction that already exists in the world. A painted
+  marking carries a facing that cannot be reasoned about — on this world's east-west road
+  the north kerb faces west and the south kerb faces east, so the two sides of one
+  carriageway point opposite ways — and a branch needs facings that appear nowhere on its
+  parent. Cloning them from the north-south segment of the junction beside home base keeps
+  the one rule here that has never been safely broken: copy block state, never rebuild it.
+  `--from` names a different junction to learn from.
+- It clears the parent's kerb line across the mouth, so the two roads join instead of one
+  being painted straight through the other.
+- Verified in the world rather than from the tool's report: a 60-block branch off the road
+  at x -4184 has side lines facing south and north on its two kerbs against west and east
+  on the parent, and centre dashes every 5.
+
+**The road tonight's test damaged is repaired.** 1,241 of 2,538 columns had no carriageway
+and none of the 2,538 had markings.
+
+- All 2,538 columns now carry full carriageway and markings, confirmed by reading the
+  region files rather than by trusting the tools that wrote them. The dashed centre keeps
+  its phase the whole way, 2,538 blocks from the marked road it was copied from.
+- One column had been "repaired" earlier by a run that laid five slices across the road
+  instead of along it, leaving grass where the asphalt belonged. That is the orientation
+  bug, and it is why the count is verified from the world.
+
+**Prompt.** `<tunnels>` gains `mcbranch`, says that mcpave now marks what it paves, and adds
+two rules from tonight: give a bore the marking level and never the carriageway, and run a
+dry run with the same options as the real command. A dry run without `--line` refuses loose
+material that the real run accepts, so the pair read as the tool contradicting itself.
+
 ## 0.19.0 — Minecraft 26.2 (NeoForge)
 
 **A 2000-block extension laid 225 slices of 2001, ten bores then cut 700 blocks of asphalt
