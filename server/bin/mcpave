@@ -11,6 +11,7 @@
                      bore can follow. Off by default; 3 matches mcbore.
   --fill <block>     what to make that volume with       (default minecraft:stone)
   --no-fill          the default, and accepted so older commands still run
+  --no-repave        lay the carriageway but leave it unmarked
   --sample <n>       how far to look for intact road to copy      (default 30)
   --dry-run          report what it found, change nothing
   --dimension <dim>  default minecraft:overworld
@@ -49,85 +50,28 @@ reach without being asked. The volume is still scanned on every run, so a run th
 water and air in place says how many blocks it left and what a following bore will make
 of them.
 """
+import subprocess
 import sys
 from collections import Counter
 
 sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
+import roads  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SAMPLE = 30           # how far to look for an intact slice to copy
 SETTLE = 0.6          # seconds for force-loaded chunks to become writable
-SHOULDER = 2          # how far past the strip a carriageway may reach, in total
-REACH = 24            # how far across to look before calling a surface unbounded
-RUN = 16              # identical slices in a row before a surface counts as built
 BORE = 3              # the clearance mcbore cuts, and so the fill height that suits it
+WINDOW = 256          # slices paved per force-load, so a long run holds few chunks open
 
-
-def at(t: int, across: int, along_x: bool) -> tuple[int, int]:
-    """World x, z from a position along the road and one across it."""
-    return (t, across) if along_x else (across, t)
-
-
-def slice_names(reader, y, t, acrosses, along_x):
-    """The blocks across the road at `t`, or None if any of them is passable.
-
-    A road is continuous across its width. One passable spot means the edge of the
-    carriageway, a hole, or open ground that merely happens to sit beside it, and
-    copying any of those along would carry the flaw the whole way.
-    """
-    names = []
-    for across in acrosses:
-        x, z = at(t, across, along_x)
-        name = reader.block(x, y, z)
-        if region.passable(name):
-            return None
-        names.append(name)
-    return names
-
-
-def spreads_across(reader, y, t, acrosses, along_x, kinds) -> bool:
-    """Whether this surface carries on sideways, which a carriageway does not."""
-    extra = 0
-    for step in (-1, 1):
-        edge = (acrosses[0] - 1) if step < 0 else (acrosses[-1] + 1)
-        for i in range(REACH):
-            x, z = at(t, edge + step * i, along_x)
-            if reader.block(x, y, z) not in kinds:
-                break
-            extra += 1
-    return extra > SHOULDER
-
-
-def road_slice(reader, y, t, away, acrosses, along_x):
-    """The slice at `t` if it is finished carriageway, else None.
-
-    Solid ground is not road, and this is the whole difficulty. A hillside, a beach and
-    a field are every bit as solid and continuous as a carriageway. The first version
-    of this tool tested only for solid, and asked to carry a road on from the mouth of
-    a tunnel it took the rock face in front of it for road and offered to clone stone,
-    dirt and sand the whole way to the coast.
-
-    Two things separate them, and one alone is not enough. A road stops dead at its
-    edges: the carriageway at the end of this one is bounded by stone on both sides at
-    exactly its own width. Natural ground does not, though it is patchier than it
-    looks — a band of stone happened to run five blocks past the strip and no further,
-    which a generous tolerance waved through. So the width has to match almost exactly,
-    not roughly. A road is also built, so the same slice repeats along its length far
-    beyond anything natural ground holds for.
-
-    Ground has to fail both tests to be taken for road. Loosen either one and it does.
-    """
-    names = slice_names(reader, y, t, acrosses, along_x)
-    if not names:
-        return None
-    if spreads_across(reader, y, t, acrosses, along_x, set(names)):
-        return None
-    for i in range(1, RUN + 1):
-        if slice_names(reader, y, t + away * i, acrosses, along_x) != names:
-            return None
-    return names
+# What a carriageway is and which way it runs lives in roads.py, because mcrepave needs
+# the same answers and answering them separately is what let one tool clone a hillside
+# and the other clone a tunnel wall.
+at = roads.at
+slice_names = roads.slice_names
+spreads_across = roads.spreads_across
+road_slice = roads.road_slice
 
 
 def find_source(reader, y, lo, hi, acrosses, along_x, reach):
@@ -162,6 +106,7 @@ def main() -> None:
     fill = take("--fill", str, "minecraft:stone")
     sample_len = take("--sample", int, SAMPLE)
     no_fill = "--no-fill" in args
+    repave = "--no-repave" not in args
     dry = "--dry-run" in args
     nums = [a for a in args if not a.startswith("--")]
     if len(nums) != 5:
@@ -238,27 +183,38 @@ def main() -> None:
 
         ctx = f"execute in {dimension} run "
         pad = sample_len + 2
-        load = (x1 - pad, z1 - pad, x2 + pad, z2 + pad)
         laid = 0
+        a1, a2 = acrosses[0], acrosses[-1]
+        sx1, sz1 = at(src, a1, along_x)
+        sx2, sz2 = at(src, a2, along_x)
+        # The slice being copied from has to stay loaded for every window, not only for
+        # whichever one it happens to sit beside.
+        src_box = (min(sx1, sx2) - pad, min(sz1, sz2) - pad,
+                   max(sx1, sx2) + pad, max(sz1, sz2) + pad)
         with Rcon() as rcon:
-            rcon.command(f"{ctx}forceload add {load[0]} {load[1]} {load[2]} {load[3]}")
-            try:
-                import time
-                time.sleep(SETTLE)
-                a1, a2 = acrosses[0], acrosses[-1]
-                sx1, sz1 = at(src, a1, along_x)
-                sx2, sz2 = at(src, a2, along_x)
-                for t in range(lo, hi + 1):
-                    dx1, dz1 = at(t, a1, along_x)
-                    # clone, not fill: the carriageway comes across exactly as it is,
-                    # kerbs, block states and all, without anything here naming it.
-                    out = rcon.command(f"{ctx}clone {sx1} {y} {sz1} {sx2} {y} {sz2} "
-                                       f"{dx1} {y} {dz1}")
-                    if "cloned" in out.lower():
-                        laid += 1
-            finally:
-                rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
-                             f"{load[2]} {load[3]}")
+            import time
+            for start in range(lo, hi + 1, WINDOW):
+                stop = min(start + WINDOW - 1, hi)
+                wx1, wz1 = at(start, a1, along_x)
+                wx2, wz2 = at(stop, a2, along_x)
+                box = (min(wx1, wx2) - pad, min(wz1, wz2) - pad,
+                       max(wx1, wx2) + pad, max(wz1, wz2) + pad)
+                builder.forceload(rcon, ctx, box, add=True)
+                builder.forceload(rcon, ctx, src_box, add=True)
+                try:
+                    time.sleep(SETTLE)
+                    for t in range(start, stop + 1):
+                        dx1, dz1 = at(t, a1, along_x)
+                        # clone, not fill: the carriageway comes across exactly as it
+                        # is, kerbs, block states and all, without anything here
+                        # naming it.
+                        out = rcon.command(f"{ctx}clone {sx1} {y} {sz1} "
+                                           f"{sx2} {y} {sz2} {dx1} {y} {dz1}")
+                        if "cloned" in out.lower():
+                            laid += 1
+                finally:
+                    builder.forceload(rcon, ctx, box, add=False)
+            builder.forceload(rcon, ctx, src_box, add=False)
         print(f"laid {laid} of {hi - lo + 1} slice(s)")
 
         if envelope:
@@ -269,6 +225,23 @@ def main() -> None:
         if laid < hi - lo + 1:
             sys.exit(f"{hi - lo + 1 - laid} slice(s) would not take the clone. The road "
                      f"is part laid; re-run once you know why.")
+
+        # A road without its markings is not a finished road, and laying them is a
+        # thing mcrepave already does correctly: it reads the repeat off the road
+        # behind, matches the phase, and clones a marking that is already the right way
+        # round. Extending the carriageway and leaving the markings to a separate
+        # request produced 2,538 blocks of blank asphalt.
+        if repave:
+            out = subprocess.run(
+                ["/opt/mc/mcrepave", str(y + 1), str(x1), str(z1), str(x2), str(z2),
+                 "--dimension", dimension],
+                capture_output=True, text=True)
+            for line in (out.stdout + out.stderr).splitlines():
+                print(f"  {line}")
+            if out.returncode != 0:
+                sys.exit("the carriageway is laid but the markings are not. Fix the "
+                         "reason above and re-run mcrepave over the same strip; "
+                         "paving again is not needed.")
 
     except region.RegionError as e:
         sys.exit(str(e))

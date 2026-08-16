@@ -17,6 +17,8 @@ import time
 MAX_BLOCKS_PER_FILL = 32768      # hard server limit
 SETTLE = 0.6                     # seconds for force-loaded chunks to become writable
 CHUNK_MARGIN = 2
+FORCELOAD_CAP = 256              # chunks per `forceload add`, enforced by the server
+FORCELOAD_SIDE = 15              # chunks per side of one piece: 225, inside the cap
 
 NEIGHBOURS = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
 
@@ -139,6 +141,31 @@ def bounds(cells):
     return min(xs), min(ys), min(zs), max(xs), max(ys), max(zs)
 
 
+def load_boxes(x1, z1, x2, z2, side: int = FORCELOAD_SIDE):
+    """A region split into pieces small enough for one `forceload add` each.
+
+    The server refuses more than 256 chunks in one command and, refusing, loads none of
+    them. A single command for a 2000-block road asked for 645, so nothing was loaded,
+    the clones that followed went into chunks that were not there, and the tool reported
+    1776 slices that "would not take the clone" without saying why.
+    """
+    out = []
+    for cx in range(x1 >> 4, (x2 >> 4) + 1, side):
+        ex = min(x2 >> 4, cx + side - 1)
+        for cz in range(z1 >> 4, (z2 >> 4) + 1, side):
+            ez = min(z2 >> 4, cz + side - 1)
+            out.append((max(x1, cx << 4), max(z1, cz << 4),
+                        min(x2, (ex << 4) + 15), min(z2, (ez << 4) + 15)))
+    return out
+
+
+def forceload(rcon, ctx: str, box, add: bool = True) -> None:
+    """Load or release a region, in as many commands as the chunk cap needs."""
+    verb = "add" if add else "remove"
+    for x1, z1, x2, z2 in load_boxes(*box):
+        rcon.command(f"{ctx}forceload {verb} {x1} {z1} {x2} {z2}")
+
+
 def write(rcon, dimension: str, cells: set, block: str, replace: str | None = None,
           progress=None) -> int:
     """Force-load, fill, release. Returns the number of blocks actually changed."""
@@ -152,7 +179,7 @@ def write(rcon, dimension: str, cells: set, block: str, replace: str | None = No
 
     pieces = [p for box in to_boxes(cells) for p in split(box)]
     changed = 0
-    rcon.command(f"{ctx}forceload add {load[0]} {load[1]} {load[2]} {load[3]}")
+    forceload(rcon, ctx, load, add=True)
     try:
         # A chunk force-loaded a moment ago is not there yet, and filling it silently
         # changes nothing.
@@ -170,5 +197,5 @@ def write(rcon, dimension: str, cells: set, block: str, replace: str | None = No
             if progress and i % 25 == 0:
                 progress(i, len(pieces), changed)
     finally:
-        rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} {load[2]} {load[3]}")
+        forceload(rcon, ctx, load, add=False)
     return changed

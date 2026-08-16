@@ -51,6 +51,7 @@ import time
 sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
+import roads  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SETTLE = 0.6          # seconds for force-loaded chunks to become writable
@@ -367,6 +368,25 @@ def main() -> None:
             if (rx, rz) != was:
                 print(f"road found: centred at {rx} {floor_y} {rz}, running along "
                       f"{axis} (you were at {was[0]} {was[1]})")
+
+        # The floor of a road tunnel is the marking level, one block above the
+        # carriageway — that is the level a bore may clear, and the asphalt underneath
+        # is not its to touch. Given the carriageway itself it cuts the road away: ten
+        # bores run at --floor 62 along a road paved at 62 destroyed nearly 700 blocks
+        # of it, and the repave that followed then read stone from beneath the cut and
+        # called that the road surface. Coordinates come with no such check; a player's
+        # feet do, which is why only the explicit form ever got this wrong.
+        axis_x = facing in ("+x", "-x")
+        across0 = (start[1] - half) if axis_x else (start[0] - half)
+        acrosses = range(across0, across0 + width)
+        here = start[0] if axis_x else start[1]
+        if (not roads.bounded_slice(reader, floor_y - 1, here, acrosses, axis_x)
+                and roads.bounded_slice(reader, floor_y, here, acrosses, axis_x)):
+            sys.exit(
+                f"y={floor_y} is the carriageway here, not the tunnel floor. Boring at "
+                f"this level would cut the road away and leave nothing to drive on. The "
+                f"floor of a road tunnel is the marking level, one block up: pass "
+                f"--floor {floor_y + 1}.")
 
         # Following a road means going no further than the road goes. Boring with no
         # road is still unbounded: --no-align and explicit coordinates cut through

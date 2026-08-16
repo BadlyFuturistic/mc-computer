@@ -44,6 +44,7 @@ from collections import Counter
 
 sys.path.insert(0, "/opt/mc")
 import region  # noqa: E402
+import roads  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SAMPLE = 30           # how much intact road to read when working out the repeat
@@ -140,17 +141,18 @@ def main() -> None:
     x1, x2 = sorted((x1, x2))
     z1, z2 = sorted((z1, z2))
 
-    # A road runs the long way down the strip that damaged it. Sampling across the
-    # short way instead reads the walls of the tunnel rather than the road beyond its
-    # mouths, and a tunnel bored north to south got its floor filled with its own
-    # lining. A square strip says nothing either way, and x is as good a guess as any.
-    along_x = (x2 - x1) >= (z2 - z1)
-    lo, hi = (x1, x2) if along_x else (z1, z2)
-    acrosses = range(z1, z2 + 1) if along_x else range(x1, x2 + 1)
-
     try:
         reader = region.Reader(dimension)
         reader.flush()
+
+        # Which way the road runs comes from the road, not from the shape of the strip.
+        # Reading the long side as the road holds for a hundred blocks of damage and
+        # fails on the short ones: a bore of a single block hands this a strip 1 along
+        # and 5 across, so it decided the road ran across itself, sampled the tunnel
+        # walls for road, and cloned those into the floor.
+        along_x = roads.direction(reader, y - 1, (x1 + x2) // 2, (z1 + z2) // 2)
+        lo, hi = (x1, x2) if along_x else (z1, z2)
+        acrosses = range(z1, z2 + 1) if along_x else range(x1, x2 + 1)
 
         surface = road_surface(reader, y, x1, z1, x2, z2)
         if surface is None:
@@ -158,6 +160,19 @@ def main() -> None:
                 f"nothing solid under y={y} anywhere in this strip, so there is no road "
                 f"here to match. Check the level: markings sit at the tunnel floor and "
                 f"the carriageway is the row below it.")
+
+        # A presence check is not an identity check. road_surface takes the commonest
+        # solid block under the strip, and one level too low that is whatever the road
+        # was built on rather than the road. Asked to repave at the carriageway level
+        # instead of the marking level, it read stone from below the asphalt, called
+        # stone the road surface, and laid stone across the road for 300 blocks.
+        if not roads.carriageway_near(reader, y - 1, lo, hi, acrosses, along_x):
+            sys.exit(
+                f"the row under y={y} is not carriageway at either end of this strip, "
+                f"so there is no road here to copy. Markings sit one block above the "
+                f"road surface: check that y={y} is the marking level and not the "
+                f"carriageway itself.")
+
         print(f"road surface: {surface} (read from y={y - 1} under the strip)")
         print(f"road runs along {'x' if along_x else 'z'}")
 

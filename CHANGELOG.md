@@ -5,6 +5,38 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.19.0 — Minecraft 26.2 (NeoForge)
+
+**A 2000-block extension laid 225 slices of 2001, ten bores then cut 700 blocks of asphalt
+away, and the repave that followed cloned the stone from under the road across the road.**
+Three tools, three bugs, one shape: each answered a question about the road from its
+arguments instead of from the road.
+
+- New `roads.py`. Which way a road runs and whether a thing is carriageway were worked out
+  separately in `mcpave` and `mcrepave`, and the two disagreed. They now come from one
+  place, measured off the road itself.
+- `builder.load_boxes` splits a force-load across as many commands as the chunk cap needs.
+  `forceload add` refuses more than 256 chunks and loads none of them when it refuses; one
+  command for a 2000-block road asked for 645, so nothing was loaded and 1776 slices went
+  into chunks that were not there. `builder.write` had the same latent bug, so any long
+  `mcfill` would have hit it.
+- `mcpave` paves in windows of 256 slices, keeping the slice it copies from loaded across
+  all of them, so peak chunk load stays bounded on a run of any length.
+- `mcpave` now lays markings, by calling `mcrepave` over what it paved. An extension is not
+  finished until it is drivable, and leaving the markings to a later request produced 2,538
+  blocks of blank asphalt. `--no-repave` opts out.
+- `mcrepave` took the road's direction from the shape of the strip it was given: the long
+  side is the road. On a one-block bore the strip is 1 along and 5 across, so it decided the
+  road ran across itself and sampled the tunnel walls for road. Direction now comes from the
+  road.
+- `mcrepave` called the commonest solid block under the strip the road surface, with no test
+  that it was road. One level too low that is whatever the road was built on. It now checks
+  the level is carriageway — solid across and stopping at its edges — and says so plainly
+  when it is not.
+- `mcbore` refuses a `--floor` that sits on the carriageway. The tunnel floor is the marking
+  level; given the carriageway itself a bore cuts the road away. A player's feet gave the
+  right level all along, which is why only the explicit-coordinate form ever got this wrong.
+
 ## 0.18.2 — Minecraft 26.2 (NeoForge)
 
 **Asked for 2000 blocks of road across open water, mcpave laid 538 and sealed every one
