@@ -120,23 +120,31 @@ def main() -> None:
     x1, x2 = sorted((x1, x2))
     z1, z2 = sorted((z1, z2))
 
-    # The road runs the long way down the strip, as in mcrepave. A square strip says
-    # nothing either way and x is as good a guess as any.
-    along_x = (x2 - x1) >= (z2 - z1)
-    lo, hi = (x1, x2) if along_x else (z1, z2)
-    acrosses = list(range(z1, z2 + 1) if along_x else range(x1, x2 + 1))
-
     try:
         reader = region.Reader(dimension)
         reader.flush()
 
-        found = find_source(reader, y, lo, hi, acrosses, along_x, sample_len)
+        # Which way the road runs comes from the road either side, not from the shape of
+        # the strip. Reading the long side as the road holds for a long strip and fails
+        # on a short one: a gap of a single block is 1 along and 5 across, so six
+        # one-block repairs were attempted at right angles to the carriageway and none
+        # of them found any road to copy. Nothing inside the strip can settle it either,
+        # because the strip is the damage. So both readings are tried and the one that
+        # finds finished road wins; along the road there is some, across it there is not.
+        found = along_x = lo = hi = acrosses = None
+        for guess in (True, False):
+            g_lo, g_hi = (x1, x2) if guess else (z1, z2)
+            g_across = list(range(z1, z2 + 1) if guess else range(x1, x2 + 1))
+            hit = find_source(reader, y, g_lo, g_hi, g_across, guess, sample_len)
+            if hit:
+                found, along_x, lo, hi, acrosses = hit, guess, g_lo, g_hi, g_across
+                break
         if not found:
             sys.exit(
                 f"refusing: no finished road within {sample_len} blocks of either end "
                 f"of this strip at y={y}, so there is nothing to say what the "
                 f"carriageway should be. A slice counts as road only if it is solid "
-                f"right across and no more than {SHOULDER} blocks wider than this "
+                f"right across and no more than {roads.SHOULDER} blocks wider than this "
                 f"strip; solid ground that carries on across is a hillside, not a "
                 f"road. Check the level — the carriageway is one below the markings — "
                 f"and that the strip lines up with the road.")
