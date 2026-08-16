@@ -58,6 +58,7 @@ sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
 import roads  # noqa: E402
+import verify  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SAMPLE = 30           # how far to look for an intact slice to copy
@@ -193,6 +194,11 @@ def main() -> None:
         pad = sample_len + 2
         laid = 0
         a1, a2 = acrosses[0], acrosses[-1]
+        # The strip that is about to become carriageway, so it can be read back after.
+        wx1, wz1 = at(lo, a1, along_x)
+        wx2, wz2 = at(hi, a2, along_x)
+        watch = verify.Watch(dimension, (min(wx1, wx2), y, min(wz1, wz2),
+                                         max(wx1, wx2), y, max(wz1, wz2)))
         sx1, sz1 = at(src, a1, along_x)
         sx2, sz2 = at(src, a2, along_x)
         # The slice being copied from has to stay loaded for every window, not only for
@@ -223,6 +229,18 @@ def main() -> None:
                 finally:
                     builder.forceload(rcon, ctx, box, add=False)
             builder.forceload(rcon, ctx, src_box, add=False)
+        # `laid` counts clones RCON accepted. Whether the carriageway is there, and
+        # whether it is made of road rather than whatever the source slice really held,
+        # is a question only the world answers.
+        main_block, per_slice = kinds.most_common(1)[0]
+        problem = (watch.check(main_block, laid * per_slice)
+                   or watch.unexpected(set(names)))
+        if watch.note:
+            print(f"note: {watch.note}", file=sys.stderr)
+        if problem:
+            sys.exit(f"the paving reported success and the world disagrees: {problem}. "
+                     f"Nothing here is finished road; check the slice at "
+                     f"{'x' if along_x else 'z'}={src} that it copied from.")
         print(f"laid {laid} of {hi - lo + 1} slice(s)")
 
         if envelope:

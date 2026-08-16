@@ -193,7 +193,7 @@ for things no data file records, such as which base is the important one.
 | `mcmotd` | set the MOTD in `compose.yaml` |
 | `mcask` | ask from a terminal, in a forked session with full context |
 | `mchealth` | one-shot health check: service, version, RCON, world data, spend |
-| `mcblock` | what block is actually there; survey or search a region |
+| `mcblock` | what block is actually there; survey, search or check a region |
 | `mcitem` | the real id for an item or block a player named |
 | `mcbore` | cut a tunnel through a mass, finding both ends itself |
 | `mcpave` | carry a carriageway on from the end of a road |
@@ -260,6 +260,45 @@ trusting a walk, and `mcblock --verify` does the same on demand. Run one after u
 **Mod-specific paths.** `mcbag` reads Sophisticated Backpacks' store at
 `world/dimensions/minecraft/overworld/data/sophisticatedbackpacks/backpack_storage.dat`
 and resolves it by the item's `storage_uuid`. A mod update can move or restructure this.
+
+## Checking a change landed
+
+    mcblock check <x1> <y1> <z1> <x2> <y2> <z2>          JSON: counts, surfaces, voids
+    mcblock check <x1> <y1> <z1> <x2> <y2> <z2> --text   the same, to read
+
+Reports what a box is made of, the surface level of every column, columns that are empty
+or hollow underneath, and any block id that appears inside the box but nowhere in the
+terrain around it — which is what a player's build looks like from a tool's point of
+view. It is read-only, and it flushes first, so it describes the world as it is now
+rather than as it was at the last save.
+
+There is no list of natural blocks anywhere in this. The surrounding terrain is the
+comparison, so a modded block the server gained yesterday does not need adding anywhere.
+The cost is that a genuinely rare natural block reads as foreign: treat that field as
+something to look at, not a verdict. Entities are not read at all — a box that reports
+clean can still have a minecart parked in it.
+
+The writing tools use the same check on themselves. `mcfill`, `mcshape`, `mcpave`,
+`mcrepave`, `mcbranch` and `mcbore` each survey the box before they write, flush, survey
+it again, and refuse to report a success the world does not support. RCON counts the
+commands it accepted, which is not the same question: `mcrepave` once cloned a hillside
+into a bored tunnel, 1190 blocks, and every one came back as a success.
+
+## Tests
+
+    python3 -m unittest discover -s tests
+
+Runs anywhere, including a workstation, because everything it covers is arithmetic:
+the merge and split in `builder.py`, the road tests in `roads.py`, the `falls` and
+`passable` predicates in `region.py`, and the comparisons in `verify.py`. These are the
+modules shared by the most tools, so a geometry bug here reaches `mcpave`, `mcrepave`,
+`mcbranch`, `mcbore` and `mcshape` at once.
+
+Anything that talks to RCON or reads a region file is tested by deploying it and running
+it on the host. There are no region-file fixtures on purpose: `region.py` decodes chunks
+and cannot write them, so a fixture world would need an NBT writer first — more code than
+the bugs it would catch. Where a test needs a world it supplies a reader backed by a
+dict.
 
 ## Health checks
 

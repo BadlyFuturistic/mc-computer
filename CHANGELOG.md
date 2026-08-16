@@ -5,6 +5,35 @@ Minecraft version it was developed and tested against, because several dependenc
 NBT syntax, log line formats, datapack layout — change between Minecraft versions and
 fail *silently* rather than erroring.
 
+## 0.21.0 — Minecraft 26.2 (NeoForge)
+
+**A write now reads its own work back, and there is a test suite.**
+
+- New `mcblock check <box>`: counts by block id, the surface level of every column,
+  columns that are empty or hollow underneath, and any block id present in the box but
+  absent from the terrain around it. JSON by default because the caller is usually
+  another tool, `--text` to read it. Read-only, and it flushes first.
+- The "foreign block" test derives its comparison from the world rather than from a list
+  of natural blocks. A maintained list is wrong for the next modded block the server
+  gains, and wrong quietly. The cost is that a rare natural block reads as foreign, so
+  the field is a signal and not a verdict.
+- `mcfill`, `mcshape`, `mcpave`, `mcrepave`, `mcbranch` and `mcbore` survey their box
+  before writing, flush, survey it again, and refuse to report a success the world does
+  not support. RCON counts commands it accepted, not blocks that ended up as asked:
+  `mcrepave` cloned a hillside into a bored tunnel, 1190 blocks, and reported every one
+  as a success. `mcrepave` and `mcpave` check the kinds they laid, `mcbore` checks the
+  tunnel is actually clear, and the rest check the block they promised went up.
+- A check that cannot read the world says so and lets the write stand. Refusing every
+  write because the checker is blind would be worse than the problem, and the note goes
+  to the operator either way, so "not checked" never reads as "checked and fine".
+- Snow and grass are ignored by the kind check. Weather arrives between the write and the
+  read, and a check that fails on weather gets switched off.
+- First tests in this repository: 89 of them, over `builder`, `roads`, `region` and
+  `verify`. `python3 -m unittest discover -s tests`, standard library only, no fixtures
+  and no world. They pin the incidents the rules came from — the merge losing no cells,
+  the forceload staying under the 256-chunk cap, a road one level too low reading as
+  ground, sandstone not falling.
+
 ## 0.20.1 — Minecraft 26.2 (NeoForge)
 
 - `mccost` reports a single past day: `mccost yesterday` and `mccost 2026-08-09` join

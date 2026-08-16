@@ -4,16 +4,20 @@
   mcblock <x> <y> <z> [--dimension <dim>]
   mcblock survey <x1> <y1> <z1> <x2> <y2> <z2> [--top <n>] [--match <text>]
   mcblock find <text> <x1> <y1> <z1> <x2> <y2> <z2> [--limit <n>]
+  mcblock check <x1> <y1> <z1> <x2> <y2> <z2> [--text] [--margin <n>]
   mcblock dimensions
 
   mcblock 950 66 293                       -> waystones:andesite_waystone
   mcblock survey 300 60 200 340 80 240     what a region is made of
   mcblock find pipez 300 50 200 340 70 240 where a block actually is
+  mcblock check 300 60 200 340 80 240      counts, surfaces, voids and anything foreign
   mcblock 950 66 293 --verify              cross-check one read against the server
 
   --dimension <dim>  default minecraft:overworld
   --no-flush         skip the save; faster, but misses changes since the last save
   --verify           confirm the read against RCON before trusting it
+  --text             human summary from `check` instead of JSON
+  --margin <n>       how far outside the box `check` samples terrain (default 8)
 
 RCON cannot answer this question. Its only block read is `execute if block <id>`,
 which tests an id you already guessed and replies yes or no — so a wrong guess and an
@@ -25,6 +29,7 @@ first so the answer is current; it costs about a third of a second, once, howeve
 blocks are read after it.
 """
 import itertools
+import json
 import sys
 import time
 
@@ -82,6 +87,53 @@ def report_survey(reader, box, top, match):
         print(f"  {count:>10,}  {name}")
     if len(ranked) > top:
         print(f"  ... and {len(ranked) - top} more (raise --top to see them)")
+    return 0
+
+
+def report_check(reader, box, margin, max_columns, as_text):
+    """A whole box, described from the files rather than from a tool's own report.
+
+    JSON by default: the usual caller is another tool or the assistant, checking that a
+    write landed. --text is for reading it yourself.
+    """
+    import verify
+
+    found = verify.report(reader, box, margin=margin, max_columns=max_columns)
+    if not as_text:
+        # Compact on purpose. Indented, the per-column list runs to five lines a
+        # column, and the usual reader of this is paying by the token.
+        print(json.dumps(found))
+        return 0
+
+    x1, y1, z1, x2, y2, z2 = found["box"]
+    print(f"{x1} {y1} {z1} .. {x2} {y2} {z2}   {found['volume']:,} blocks, "
+          f"{found['distinct_ids']} distinct ids")
+    for name, count in list(found["blocks"].items())[:10]:
+        print(f"  {count:>10,}  {name}")
+    if found["distinct_ids"] > 10:
+        print(f"  ... and {found['distinct_ids'] - 10} more ids")
+
+    surface = found["surface"]
+    span = (f"y {surface['min']}..{surface['max']}"
+            if surface["min"] is not None else "no surface anywhere in the box")
+    print(f"surface: {surface['columns']:,} column(s), {span}, "
+          f"{len(surface['levels'])} distinct level(s)")
+
+    voids = found["voids"]
+    print(f"voids: {voids['empty_columns']:,} empty column(s), "
+          f"{voids['undermined_columns']:,} with holes under the surface")
+    for x, z, y, holes in voids["undermined"][:10]:
+        print(f"  {x} {z}: surface y{y}, {holes} hole(s) below it")
+
+    if found["foreign"] is None:
+        print(f"foreign: not derived — {found.get('foreign_note', 'no comparison')}")
+    elif found["foreign"]:
+        print("foreign (present here, absent from the terrain around this box):")
+        for name, count in sorted(found["foreign"].items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>10,}  {name}")
+    else:
+        print("foreign: nothing here that the surrounding terrain does not also use")
+    print(f"entities: {found['entities']}")
     return 0
 
 
@@ -152,9 +204,12 @@ def main() -> None:
     top = take(args, "--top", int, 15)
     limit = take(args, "--limit", int, 50)
     match = take(args, "--match", str, None)
+    margin = take(args, "--margin", int, 8)
+    max_columns = take(args, "--max-columns", int, 1024)
     no_flush = "--no-flush" in args
     verify = "--verify" in args
-    args = [a for a in args if a not in ("--no-flush", "--verify")]
+    as_text = "--text" in args
+    args = [a for a in args if a not in ("--no-flush", "--verify", "--text")]
 
     try:
         if args[0] == "dimensions":
@@ -172,6 +227,12 @@ def main() -> None:
             if len(box) != 6:
                 sys.exit("survey needs six coordinates: x1 y1 z1 x2 y2 z2")
             sys.exit(report_survey(reader, box, top, match))
+
+        if args[0] == "check":
+            box = coords(args[1:], 6)
+            if len(box) != 6:
+                sys.exit("check needs six coordinates: x1 y1 z1 x2 y2 z2")
+            sys.exit(report_check(reader, box, margin, max_columns, as_text))
 
         if args[0] == "find":
             if len(args) < 8:

@@ -46,6 +46,7 @@ sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
 import roads  # noqa: E402
+import verify  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SAMPLE = 30           # how much intact road to read when working out the repeat
@@ -301,6 +302,15 @@ def main() -> None:
         for plan in plans:
             windows.setdefault((plan[1] - lo) // WINDOW, []).append(plan)
 
+        # The strip itself, at marking level. Not box_for's padded version: that reaches
+        # a block past each kerb, where grass and dirt belong and would read as strays.
+        p1x, p1z = at(lo, a_lo, along_x)
+        p2x, p2z = at(hi, a_hi, along_x)
+        watch = verify.Watch(dimension, (min(p1x, p2x), y, min(p1z, p2z),
+                                         max(p1x, p2x), y, max(p1z, p2z)))
+        # Every marking any column plans to lay. `kinds` above is only the last column's.
+        placing = {name for *_, name in plans if name} | {"minecraft:air"}
+
         with Rcon() as rcon:
             import time
             marked = cleared = already = failed = 0
@@ -345,6 +355,16 @@ def main() -> None:
             finally:
                 for end_box in ends:
                     builder.forceload(rcon, ctx, end_box, add=False)
+        # A clone reports success for whatever was at the source. That is how a hillside
+        # ended up in a bored tunnel, 1190 blocks, every one of them reported as a
+        # marking. Read the strip back and see what is really standing on it.
+        problem = watch.unexpected(placing)
+        if watch.note:
+            print(f"note: {watch.note}", file=sys.stderr)
+        if problem:
+            sys.exit(f"the repave reported success and the world disagrees: {problem}. "
+                     f"The source it cloned from was not road. Check y={y - 1} under "
+                     f"both ends of the strip before running it again.")
         print(f"repaved {marked + cleared + already} of {len(plans)} block(s): "
               f"{marked} marking(s) cloned, {cleared} cleared, "
               f"{already} already right")

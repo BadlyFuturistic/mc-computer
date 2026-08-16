@@ -44,6 +44,7 @@ sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import marks  # noqa: E402
 import region  # noqa: E402
+import verify  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 WARN_VOLUME = 2_000_000
@@ -292,11 +293,19 @@ def main() -> None:
         def note(done, total, changed):
             print(f"  {done}/{total} fills, {changed:,} blocks so far", flush=True)
 
+        watch = verify.Watch(dimension, (x1, y1, z1, x2, y2, z2))
         with Rcon() as rcon:
             changed = builder.write(rcon, dimension, cells, block, replace, note)
             if found and not keep:
                 # Markers left inside a build show up as gold blocks in a wall.
                 marks.clear(rcon, dimension, found)
+        # RCON counts the fills it accepted. Read the shape back before claiming it.
+        problem = watch.check(block, changed)
+        if watch.note:
+            print(f"note: {watch.note}", file=sys.stderr)
+        if problem:
+            raise ValueError(f"the build reported success and the world disagrees: "
+                             f"{problem}")
         print(f"built {changed:,} block(s) of {block}")
 
     except (region.RegionError, marks.MarkError, ValueError) as e:

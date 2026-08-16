@@ -52,6 +52,7 @@ sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
 import roads  # noqa: E402
+import verify  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SETTLE = 0.6          # seconds for force-loaded chunks to become writable
@@ -445,6 +446,9 @@ def main() -> None:
             return
 
         changed = 0
+        # The lining goes outside this box by construction, so once the tunnel is
+        # hollowed there should be nothing solid left inside it at all.
+        watch = verify.Watch(dimension, inside)
         with Rcon() as rcon:
             # The ceiling goes in *before* the tunnel is hollowed out. Clearing first
             # and lining afterwards leaves a window where nothing is holding the roof
@@ -467,6 +471,20 @@ def main() -> None:
                 finally:
                     rcon.command(f"{ctx}forceload remove {load[0]} {load[1]} "
                                  f"{load[2]} {load[3]}")
+
+        # Read the tunnel back before the repave runs: the repave puts markings on the
+        # floor, which are solid and inside this box, so afterwards there is no longer
+        # a clean question to ask. Anything solid in here now either never came out or
+        # fell in behind the digger.
+        problem = watch.unexpected({"minecraft:air"})
+        if watch.note:
+            print(f"note: {watch.note}", file=sys.stderr)
+        if problem:
+            sys.exit(f"the bore reported success and the tunnel is not clear: {problem}. "
+                     f"Material has fallen into it, or the fills went into chunks that "
+                     f"were not loaded. Run mcblock check {inside[0]} {inside[1]} "
+                     f"{inside[2]} {inside[3]} {inside[4]} {inside[5]} to see what is "
+                     f"in there.")
 
         repaved = None
         if repave:

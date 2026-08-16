@@ -40,6 +40,7 @@ sys.path.insert(0, "/opt/mc")
 import builder  # noqa: E402
 import region  # noqa: E402
 import roads  # noqa: E402
+import verify  # noqa: E402
 from mcrcon import Rcon, RconError  # noqa: E402
 
 SETTLE = 0.6
@@ -248,6 +249,12 @@ def main() -> None:
                      max(p[0] for p in TEACHER.values()) + 2,
                      max(p[1] for p in TEACHER.values()) + 2)
 
+        # The carriageway, to read back afterwards. Only this level: the markings above
+        # it are already guarded, because the junction they are copied from is checked
+        # for lines before anything is cloned.
+        watch = verify.Watch(dimension, (min(bx1, bx2), y, min(bz1, bz2),
+                                         max(bx1, bx2), y, max(bz1, bz2)))
+
         laid = painted = cleared = failed = 0
         with Rcon() as rcon:
             import time
@@ -285,6 +292,16 @@ def main() -> None:
                 for b in (box, parent_box, teach_box):
                     builder.forceload(rcon, ctx, b, add=False)
 
+        # A clone reports on the command, not on what it copied. If the junction this
+        # learned its facings from has changed since, every clone above succeeded and
+        # the branch is made of whatever is standing there now.
+        problem = watch.check(surface, laid * w) or watch.unexpected({surface})
+        if watch.note:
+            print(f"note: {watch.note}", file=sys.stderr)
+        if problem:
+            sys.exit(f"the branch reported success and the world disagrees: {problem}. "
+                     f"Check the parent slice at {s1[0]} {y} {s1[1]} and the junction "
+                     f"the markings were copied from before running it again.")
         print(f"laid {laid} of {length} row(s), painted {painted} marking(s), "
               f"cleared {cleared} block(s) of the parent's kerb across the mouth")
         if failed:

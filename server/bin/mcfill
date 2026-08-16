@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, "/opt/mc")
 import region
+import verify
 from mcrcon import Rcon, RconError
 
 MAX_BLOCKS_PER_FILL = 32768      # hard server limit
@@ -193,6 +194,7 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
                       max(x1, x2), max(y1, y2), max(z1, z2)), block, dimension)
         if dry:
             return 0
+        watch = verify.Watch(dimension, (x1, y1, z1, x2, y2, z2))
         for i, (sx, sy, sz, ex, ey, ez) in enumerate(pieces, 1):
             r.command(f"{ctx}forceload add {sx} {sz} {ex} {ez}")
             # A chunk force-loaded a moment ago is not there yet, and filling it
@@ -218,6 +220,13 @@ def run_fill(x1, y1, z1, x2, y2, z2, block, replace, dimension, dry, label="",
                 consecutive = 0
             if i % 20 == 0:
                 print(f"  {i}/{len(pieces)} slices, {changed:,} blocks so far", flush=True)
+    # The count above is RCON's, and RCON counts commands it accepted rather than
+    # blocks that ended up as asked. Read the box back before calling this a success.
+    problem = watch.check(block, changed)
+    if watch.note:
+        print(f"note: {watch.note}", file=sys.stderr)
+    if problem:
+        raise ValueError(f"the fill reported success and the world disagrees: {problem}")
     print(f"{label}changed {changed:,} block(s)"
           + (f", {failed} slice(s) failed" if failed else ""))
     return changed
